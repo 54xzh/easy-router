@@ -26,12 +26,13 @@ type Handler struct {
 const statusClientClosedRequest = 499
 
 type candidate struct {
-	Provider     store.Provider
-	Model        store.Model
-	Endpoint     string
-	Conversion   conversionMode
-	RequestBody  []byte
-	AttemptLabel string
+	Provider           store.Provider
+	Model              store.Model
+	Endpoint           string
+	Conversion         conversionMode
+	StreamIncludeUsage bool
+	RequestBody        []byte
+	AttemptLabel       string
 }
 
 type conversionMode string
@@ -318,7 +319,7 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.WriteHeader(resp.StatusCode)
-			copyErr := convertStream(w, resp.Body, item.Conversion, item.Model.OriginalID)
+			copyErr := convertStream(w, resp.Body, item.Conversion, item.Model.OriginalID, item.StreamIncludeUsage)
 			return resp.StatusCode, nil, resp.Header.Clone(), copyErr, false, nil
 		}
 		w.WriteHeader(resp.StatusCode)
@@ -384,6 +385,7 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 		overrides[override.TargetType+"|"+override.TargetID] = override.Disabled
 	}
 	var out []candidate
+	conversionErrors := []string{}
 	for _, step := range route.Steps {
 		if !step.Enabled || overrides[step.TargetType+"|"+step.TargetID] {
 			continue
@@ -395,6 +397,10 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			model, err := h.store.GetModel(step.TargetID)
 			if err == nil {
 				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
+					if errors.Is(err, errConversionUnsupported) {
+						conversionErrors = append(conversionErrors, model.InternalID+" "+err.Error())
+						continue
+					}
 					return nil, err
 				} else if ok {
 					out = append(out, item)
@@ -420,6 +426,10 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			models = h.orderGroupModels(group, models)
 			for _, model := range models {
 				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
+					if errors.Is(err, errConversionUnsupported) {
+						conversionErrors = append(conversionErrors, model.InternalID+" "+err.Error())
+						continue
+					}
 					return nil, err
 				} else if ok {
 					out = append(out, item)
@@ -428,6 +438,9 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 		}
 	}
 	if len(out) == 0 {
+		if len(conversionErrors) > 0 {
+			return nil, fmt.Errorf("%w：%s", errNoCandidate, strings.Join(conversionErrors, "；"))
+		}
 		return nil, errNoCandidate
 	}
 	return out, nil
@@ -480,14 +493,16 @@ func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api 
 	nextPayload["model"] = model.OriginalID
 	endpoint := "/chat/completions"
 	conversion := conversionNone
+	streamIncludeUsage := false
 	if api == "chat" {
 		if model.SupportsChat {
 			endpoint = "/chat/completions"
 		} else {
 			endpoint = "/responses"
+			streamIncludeUsage = chatStreamIncludeUsage(nextPayload)
 			nextPayload, err = convertChatToResponses(nextPayload)
 			if err != nil {
-				return candidate{}, false, err
+				return candidate{}, false, fmt.Errorf("%w：%v", errConversionUnsupported, err)
 			}
 			conversion = conversionChatToResponses
 		}
@@ -497,7 +512,7 @@ func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api 
 		} else {
 			nextPayload, err = convertResponsesToChat(nextPayload)
 			if err != nil {
-				return candidate{}, false, err
+				return candidate{}, false, fmt.Errorf("%w：%v", errConversionUnsupported, err)
 			}
 			conversion = conversionResponsesToChat
 		}
@@ -507,12 +522,13 @@ func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api 
 		return candidate{}, false, err
 	}
 	return candidate{
-		Provider:     provider,
-		Model:        model,
-		Endpoint:     endpoint,
-		Conversion:   conversion,
-		RequestBody:  body,
-		AttemptLabel: model.InternalID,
+		Provider:           provider,
+		Model:              model,
+		Endpoint:           endpoint,
+		Conversion:         conversion,
+		StreamIncludeUsage: streamIncludeUsage,
+		RequestBody:        body,
+		AttemptLabel:       model.InternalID,
 	}, true, nil
 }
 
@@ -622,7 +638,7 @@ func convertResponsesToChat(input map[string]any) (map[string]any, error) {
 
 func convertChatToResponses(input map[string]any) (map[string]any, error) {
 	allowed := map[string]bool{
-		"model": true, "messages": true, "stream": true,
+		"model": true, "messages": true, "stream": true, "stream_options": true,
 		"temperature": true, "top_p": true, "max_completion_tokens": true, "max_tokens": true,
 		"stop": true, "user": true, "metadata": true, "presence_penalty": true, "frequency_penalty": true,
 		"tools": true, "tool_choice": true, "parallel_tool_calls": true,
@@ -659,6 +675,11 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 	}
 	if value, ok := input["parallel_tool_calls"]; ok {
 		out["parallel_tool_calls"] = value
+	}
+	if value, ok := input["stream_options"]; ok {
+		if err := validateChatStreamOptions(value); err != nil {
+			return nil, err
+		}
 	}
 	rawMessages, ok := input["messages"]
 	if !ok {
@@ -733,6 +754,28 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 	}
 	out["input"] = messages
 	return out, nil
+}
+
+func validateChatStreamOptions(value any) error {
+	options, ok := value.(map[string]any)
+	if !ok {
+		return errors.New("Chat Completions stream_options 只支持对象，无法转换")
+	}
+	for key, raw := range options {
+		if key != "include_usage" {
+			return fmt.Errorf("Chat Completions stream_options.%s 无法安全转换", key)
+		}
+		if _, ok := raw.(bool); !ok {
+			return errors.New("Chat Completions stream_options.include_usage 只支持布尔值")
+		}
+	}
+	return nil
+}
+
+func chatStreamIncludeUsage(payload map[string]any) bool {
+	options, _ := payload["stream_options"].(map[string]any)
+	includeUsage, _ := options["include_usage"].(bool)
+	return includeUsage
 }
 
 func responsesToolsToChat(value any) ([]map[string]any, error) {
@@ -1436,12 +1479,12 @@ func simpleContent(value any) (string, error) {
 	}
 }
 
-func convertStream(w http.ResponseWriter, body io.Reader, conversion conversionMode, model string) error {
+func convertStream(w http.ResponseWriter, body io.Reader, conversion conversionMode, model string, includeUsage bool) error {
 	switch conversion {
 	case conversionResponsesToChat:
 		return streamChatToResponses(w, body, model)
 	case conversionChatToResponses:
-		return streamResponsesToChat(w, body, model)
+		return streamResponsesToChat(w, body, model, includeUsage)
 	default:
 		_, err := io.Copy(w, body)
 		return err
@@ -1641,7 +1684,7 @@ type streamToolCallState struct {
 	Done      bool
 }
 
-func streamResponsesToChat(w http.ResponseWriter, body io.Reader, model string) error {
+func streamResponsesToChat(w http.ResponseWriter, body io.Reader, model string, includeUsage bool) error {
 	chatID := "chatcmpl_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	created := time.Now().Unix()
 	roleSent := false
@@ -1774,6 +1817,13 @@ func streamResponsesToChat(w http.ResponseWriter, body io.Reader, model string) 
 			if err := writeChatChunk(w, chatID, created, model, map[string]any{}, finishReason); err != nil {
 				return err
 			}
+			if includeUsage {
+				if usage := chatUsageFromResponseCompleted(chunk); len(usage) > 0 {
+					if err := writeChatUsageChunk(w, chatID, created, model, usage); err != nil {
+						return err
+					}
+				}
+			}
 			_, err := io.WriteString(w, "data: [DONE]\n\n")
 			flush(w)
 			return err
@@ -1860,6 +1910,35 @@ func writeChatChunk(w io.Writer, id string, created int64, model string, delta m
 	}
 	flush(w)
 	return nil
+}
+
+func writeChatUsageChunk(w io.Writer, id string, created int64, model string, usage map[string]any) error {
+	chunk := map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []any{},
+		"usage":   usage,
+	}
+	payload, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	flush(w)
+	return nil
+}
+
+func chatUsageFromResponseCompleted(chunk map[string]any) map[string]any {
+	if response, ok := chunk["response"].(map[string]any); ok {
+		if usage := responsesUsageToChat(response["usage"]); len(usage) > 0 {
+			return usage
+		}
+	}
+	return responsesUsageToChat(chunk["usage"])
 }
 
 func flush(w io.Writer) {
@@ -2007,6 +2086,7 @@ func newRequestID() string {
 }
 
 var (
-	errRouteNotFound = errors.New("没有找到可用的路由模型或原始模型")
-	errNoCandidate   = errors.New("路由中没有可用模型")
+	errRouteNotFound         = errors.New("没有找到可用的路由模型或原始模型")
+	errNoCandidate           = errors.New("路由中没有可用模型")
+	errConversionUnsupported = errors.New("协议转换失败")
 )

@@ -98,9 +98,10 @@ func TestConvertResponsesToChatWithToolsAndImage(t *testing.T) {
 
 func TestConvertChatToResponses(t *testing.T) {
 	got, err := convertChatToResponses(map[string]any{
-		"model":      "gpt-4o",
-		"stream":     true,
-		"max_tokens": float64(128),
+		"model":          "gpt-4o",
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+		"max_tokens":     float64(128),
 		"messages": []any{
 			map[string]any{"role": "system", "content": "You are concise."},
 			map[string]any{"role": "user", "content": "Hello"},
@@ -114,6 +115,9 @@ func TestConvertChatToResponses(t *testing.T) {
 	}
 	if got["max_output_tokens"] != float64(128) {
 		t.Fatalf("max_tokens was not mapped")
+	}
+	if _, ok := got["stream_options"]; ok {
+		t.Fatalf("stream_options should not be sent to Responses upstream: %#v", got)
 	}
 	if got["instructions"] != "You are concise." {
 		t.Fatalf("unexpected instructions: %#v", got["instructions"])
@@ -269,6 +273,71 @@ func TestChatRequestUsesResponsesOnlyModel(t *testing.T) {
 	}
 }
 
+func TestRouteFallsBackWhenCandidateCannotBeConverted(t *testing.T) {
+	firstCalled := make(chan struct{}, 1)
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalled <- struct{}{}
+		writeJSON(w, http.StatusOK, map[string]any{"id": "first"})
+	}))
+	defer firstUpstream.Close()
+	var secondPayload map[string]any
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&secondPayload); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":      "chatcmpl_2",
+			"object":  "chat.completion",
+			"created": float64(123),
+			"model":   "upstream-chat",
+			"choices": []any{map[string]any{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "fallback-ok",
+				},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer secondUpstream.Close()
+
+	s := newProxyTestStore(t)
+	first := addProxyTestModel(t, s, "p1", "upstream-responses", firstUpstream.URL)
+	first = setProxyTestModelSupport(t, s, first, false, true)
+	second := addProxyTestModel(t, s, "p2", "upstream-chat", secondUpstream.URL)
+	second = setProxyTestModelSupport(t, s, second, true, false)
+	addProxyTestRoute(t, s, "coder-fast", first.InternalID, second.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"coder-fast",
+		"messages":[{"role":"user","content":"ping"}],
+		"response_format":{"type":"json_object"}
+	}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-firstCalled:
+		t.Fatal("first upstream should be skipped before request because conversion is unsupported")
+	default:
+	}
+	if secondPayload["response_format"] == nil {
+		t.Fatalf("second chat model should receive original chat payload: %#v", secondPayload)
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].FinalModel != second.InternalID || len(logs[0].Attempts) != 1 {
+		t.Fatalf("fallback should finish on second model: %#v", logs)
+	}
+}
+
 func TestResponsesRequestConvertsChatModelResponse(t *testing.T) {
 	var upstreamPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -399,12 +468,34 @@ data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"m
 `)
 	w := httptest.NewRecorder()
 
-	if err := streamResponsesToChat(w, body, "upstream-responses"); err != nil {
+	if err := streamResponsesToChat(w, body, "upstream-responses", false); err != nil {
 		t.Fatal(err)
 	}
 	out := w.Body.String()
 	if !strings.Contains(out, `"object":"chat.completion.chunk"`) || !strings.Contains(out, `"content":"pong"`) {
 		t.Fatalf("unexpected chat stream: %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("chat stream did not finish: %s", out)
+	}
+}
+
+func TestStreamResponsesToChatIncludesUsageWhenRequested(t *testing.T) {
+	body := strings.NewReader(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","response_id":"resp_1","delta":"pong"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"upstream-responses","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamResponsesToChat(w, body, "upstream-responses", true); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"choices":[]`) || !strings.Contains(out, `"prompt_tokens":2`) || !strings.Contains(out, `"completion_tokens":3`) {
+		t.Fatalf("usage chunk was not converted: %s", out)
 	}
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Fatalf("chat stream did not finish: %s", out)
@@ -447,7 +538,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"m
 `)
 	w := httptest.NewRecorder()
 
-	if err := streamResponsesToChat(w, body, "upstream-responses"); err != nil {
+	if err := streamResponsesToChat(w, body, "upstream-responses", false); err != nil {
 		t.Fatal(err)
 	}
 	out := w.Body.String()
