@@ -26,6 +26,9 @@ export type Model = {
   last_failure_at: string;
   cooldown_until: string;
   cooldown_count: number;
+  upstream_error_status: number;
+  upstream_error_at: string;
+  upstream_error: string;
   provider_enabled?: boolean;
 };
 

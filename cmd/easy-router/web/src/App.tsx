@@ -624,6 +624,7 @@ function ProviderModels({
         <tbody>
           {models.map((model) => {
             const cooldownText = autoDisableEnabled ? modelCooldownLabel(model) : "";
+            const issueLabel = modelIssueLabel(model);
             return (
               <tr key={model.internal_id}>
                 <td>{model.internal_id}</td>
@@ -635,15 +636,22 @@ function ProviderModels({
                   </div>
                 </td>
                 <td>
-                  {autoDisableEnabled && model.auto_disabled ? (
-                    <span className="badge badge-danger">自动禁用</span>
-                  ) : cooldownText ? (
-                    <span className="badge badge-warning">{cooldownText}</span>
-                  ) : model.enabled ? (
-                    <Status ok text="启用" />
-                  ) : (
-                    <Status text="禁用" />
-                  )}
+                  <div className="stack-tight">
+                    {autoDisableEnabled && model.auto_disabled ? (
+                      <span className="badge badge-danger">自动禁用</span>
+                    ) : cooldownText ? (
+                      <span className="badge badge-warning">{cooldownText}</span>
+                    ) : model.enabled ? (
+                      <Status ok text="启用" />
+                    ) : (
+                      <Status text="禁用" />
+                    )}
+                    {issueLabel ? (
+                      <span className="badge badge-warning" title={modelIssueTitle(model)}>
+                        {issueLabel}
+                      </span>
+                    ) : null}
+                  </div>
                 </td>
               </tr>
             );
@@ -679,7 +687,8 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
           {data.models.map((model) => {
             const autoDisabledActive = autoDisableOn && model.auto_disabled;
             const cooldownText = autoDisableOn ? modelCooldownLabel(model) : "";
-            const hasAutoState = modelHasAutoState(model);
+            const issueLabel = modelIssueLabel(model);
+            const hasClearableState = modelHasClearableState(model);
             return (
               <tr key={model.internal_id}>
                 <td>{model.internal_id}</td>
@@ -718,15 +727,20 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       <span className="badge badge-danger">自动禁用</span>
                     ) : cooldownText ? (
                       <span className="badge badge-warning">{cooldownText}</span>
-                    ) : !autoDisableOn && hasAutoState ? (
+                    ) : !autoDisableOn && modelHasAutoState(model) ? (
                       <span className="badge badge-warning">自动禁用已关闭</span>
-                    ) : (
+                    ) : !issueLabel ? (
                       <Status ok text="正常" />
-                    )}
+                    ) : null}
+                    {issueLabel ? (
+                      <span className="badge badge-warning" title={modelIssueTitle(model)}>
+                        {issueLabel}
+                      </span>
+                    ) : null}
                   </div>
                 </td>
                 <td>
-                  {hasAutoState ? (
+                  {hasClearableState ? (
                     <Button
                       size="sm"
                       variant="secondary"
@@ -2005,6 +2019,35 @@ function modelCooldownRemaining(model: Model) {
 
 function modelHasAutoState(model: Model) {
   return model.auto_disabled || (model.cooldown_count ?? 0) > 0 || Boolean(model.cooldown_until);
+}
+
+function modelHasClearableState(model: Model) {
+  return modelHasAutoState(model) || (model.upstream_error_status ?? 0) > 0;
+}
+
+function modelIssueLabel(model: Model) {
+  switch (model.upstream_error_status) {
+    case 401:
+      return "密钥异常 401";
+    case 403:
+      return "权限受限 403";
+    case 404:
+      return "模型或接口不存在 404";
+    case 405:
+      return "接口不支持 405";
+    case 410:
+      return "模型已下线 410";
+    default:
+      return model.upstream_error_status > 0 ? `上游 ${model.upstream_error_status}` : "";
+  }
+}
+
+function modelIssueTitle(model: Model) {
+  const parts = [
+    model.upstream_error_at ? `时间：${formatTime(model.upstream_error_at)}` : "",
+    model.upstream_error,
+  ].filter(Boolean);
+  return parts.join("\n");
 }
 
 function replaceItem<T>(items: T[], index: number, item: T) {

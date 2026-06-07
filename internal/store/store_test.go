@@ -145,7 +145,34 @@ func TestModelSuccessClearsCooldownCount(t *testing.T) {
 	}
 }
 
-func TestMigrationAddsModelCooldownColumns(t *testing.T) {
+func TestModelUpstreamErrorPersistsUntilRestore(t *testing.T) {
+	s, model := newStoreTestModel(t)
+	if err := s.RecordModelUpstreamError(model.InternalID, 401, "上游返回 401：invalid key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordModelSuccess(model.InternalID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.GetModel(model.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UpstreamErrorStatus != 401 || updated.UpstreamError == "" || updated.UpstreamErrorAt == "" {
+		t.Fatalf("upstream error should stay until manual clear: %#v", updated)
+	}
+	if err := s.RestoreModel(model.InternalID); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := s.GetModel(model.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.UpstreamErrorStatus != 0 || restored.UpstreamError != "" || restored.UpstreamErrorAt != "" {
+		t.Fatalf("restore should clear upstream error: %#v", restored)
+	}
+}
+
+func TestMigrationAddsModelStateColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -182,8 +209,8 @@ func TestMigrationAddsModelCooldownColumns(t *testing.T) {
 	defer s.Close()
 
 	columns := storeTableColumns(t, s, "models")
-	if !columns["cooldown_until"] || !columns["cooldown_count"] {
-		t.Fatalf("cooldown columns should be added: %#v", columns)
+	if !columns["cooldown_until"] || !columns["cooldown_count"] || !columns["upstream_error_status"] || !columns["upstream_error_at"] || !columns["upstream_error"] {
+		t.Fatalf("model state columns should be added: %#v", columns)
 	}
 }
 

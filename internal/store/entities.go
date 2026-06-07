@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -124,17 +125,20 @@ func (s *Store) GetModel(id string) (Model, error) {
 	var m Model
 	var providerEnabled bool
 	err := s.db.QueryRow(`SELECT m.internal_id, m.provider_id, m.original_id, m.display_name, m.supports_chat, m.supports_responses, m.supports_stream, m.context_length,
-		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count, p.enabled
+		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count,
+		m.upstream_error_status, m.upstream_error_at, m.upstream_error, p.enabled
 		FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.internal_id = ?`, id).
 		Scan(&m.InternalID, &m.ProviderID, &m.OriginalID, &m.DisplayName, &m.SupportsChat, &m.SupportsResponses, &m.SupportsStream, &m.ContextLength,
-			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount, &providerEnabled)
+			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount,
+			&m.UpstreamErrorStatus, &m.UpstreamErrorAt, &m.UpstreamError, &providerEnabled)
 	m.ProviderEnabled = providerEnabled
 	return m, err
 }
 
 func (s *Store) ListModels() ([]Model, error) {
 	rows, err := s.db.Query(`SELECT m.internal_id, m.provider_id, m.original_id, m.display_name, m.supports_chat, m.supports_responses, m.supports_stream, m.context_length,
-		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count, p.enabled
+		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count,
+		m.upstream_error_status, m.upstream_error_at, m.upstream_error, p.enabled
 		FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.provider_id, m.original_id`)
 	if err != nil {
 		return nil, err
@@ -144,7 +148,8 @@ func (s *Store) ListModels() ([]Model, error) {
 	for rows.Next() {
 		var m Model
 		if err := rows.Scan(&m.InternalID, &m.ProviderID, &m.OriginalID, &m.DisplayName, &m.SupportsChat, &m.SupportsResponses, &m.SupportsStream, &m.ContextLength,
-			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount, &m.ProviderEnabled); err != nil {
+			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount,
+			&m.UpstreamErrorStatus, &m.UpstreamErrorAt, &m.UpstreamError, &m.ProviderEnabled); err != nil {
 			return nil, err
 		}
 		models = append(models, m)
@@ -153,7 +158,7 @@ func (s *Store) ListModels() ([]Model, error) {
 }
 
 func (s *Store) RestoreModel(id string) error {
-	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, updated_at = ? WHERE internal_id = ?`, nowString(), id)
+	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, upstream_error_status = 0, upstream_error_at = '', upstream_error = '', updated_at = ? WHERE internal_id = ?`, nowString(), id)
 	return err
 }
 
@@ -200,6 +205,19 @@ func (s *Store) RecordModelFailure(modelID, reason string) error {
 
 func (s *Store) RecordModelSuccess(modelID string) error {
 	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, updated_at = ? WHERE internal_id = ?`, nowString(), modelID)
+	return err
+}
+
+func (s *Store) RecordModelUpstreamError(modelID string, status int, reason string) error {
+	reason = strings.TrimSpace(reason)
+	const maxReasonLength = 500
+	runes := []rune(reason)
+	if len(runes) > maxReasonLength {
+		reason = string(runes[:maxReasonLength]) + "..."
+	}
+	now := nowString()
+	_, err := s.db.Exec(`UPDATE models SET upstream_error_status = ?, upstream_error_at = ?, upstream_error = ?, updated_at = ? WHERE internal_id = ?`,
+		status, now, reason, now, modelID)
 	return err
 }
 

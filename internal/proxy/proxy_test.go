@@ -865,6 +865,92 @@ func TestUpstreamTimeoutFallsBackToNextModel(t *testing.T) {
 	}
 }
 
+func TestUpstreamBadRequestFallsBackToNextModel(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": "good", "choices": []any{}})
+	}))
+	defer good.Close()
+
+	s := newProxyTestStore(t)
+	first := addProxyTestModel(t, s, "p1", "first", bad.URL)
+	second := addProxyTestModel(t, s, "p2", "second", good.URL)
+	addProxyTestRoute(t, s, "coder-fast", first.InternalID, second.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || len(logs[0].Attempts) != 2 {
+		t.Fatalf("expected fallback after 400, got logs=%d attempts=%d", len(logs), len(logs[0].Attempts))
+	}
+	if logs[0].Attempts[0].HTTPStatus != http.StatusBadRequest || logs[0].Attempts[0].Status != "failed" {
+		t.Fatalf("unexpected first attempt: %#v", logs[0].Attempts[0])
+	}
+	firstAfter, err := s.GetModel(first.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstAfter.UpstreamErrorStatus != 0 {
+		t.Fatalf("400 should not create a model issue marker: %#v", firstAfter)
+	}
+}
+
+func TestUpstreamUnauthorizedMarksModelIssueAndFallsBack(t *testing.T) {
+	unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid key"})
+	}))
+	defer unauthorized.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": "good", "choices": []any{}})
+	}))
+	defer good.Close()
+
+	s := newProxyTestStore(t)
+	first := addProxyTestModel(t, s, "p1", "first", unauthorized.URL)
+	second := addProxyTestModel(t, s, "p2", "second", good.URL)
+	addProxyTestRoute(t, s, "coder-fast", first.InternalID, second.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	firstAfter, err := s.GetModel(first.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstAfter.UpstreamErrorStatus != http.StatusUnauthorized || firstAfter.UpstreamErrorAt == "" || !strings.Contains(firstAfter.UpstreamError, "上游返回 401") {
+		t.Fatalf("401 should create a model issue marker: %#v", firstAfter)
+	}
+	if err := s.RestoreModel(first.InternalID); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := s.GetModel(first.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.UpstreamErrorStatus != 0 || restored.UpstreamError != "" || restored.UpstreamErrorAt != "" {
+		t.Fatalf("restore should clear model issue marker: %#v", restored)
+	}
+}
+
 func TestAutoDisableSettingOffDoesNotRecordFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "boom"})

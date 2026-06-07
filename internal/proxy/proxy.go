@@ -213,6 +213,9 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 			attempt.Status = "failed"
 			attempt.Error = err.Error()
 			attempts = append(attempts, attempt)
+			if isModelUpstreamIssue(statusCode) {
+				_ = h.store.RecordModelUpstreamError(item.Model.InternalID, statusCode, err.Error())
+			}
 			if autoDisableEnabled {
 				_ = h.store.RecordModelFailure(item.Model.InternalID, err.Error())
 			}
@@ -306,9 +309,8 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 
 	if resp.StatusCode >= 400 {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		fallback := isFallbackable(resp.StatusCode, item.Endpoint)
 		message := fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, strings.TrimSpace(string(payload)))
-		return resp.StatusCode, payload, resp.Header.Clone(), nil, fallback, errors.New(message)
+		return resp.StatusCode, payload, resp.Header.Clone(), nil, true, errors.New(message)
 	}
 
 	if streaming {
@@ -2111,11 +2113,13 @@ func isHopHeader(key string) bool {
 	}
 }
 
-func isFallbackable(status int, endpoint string) bool {
-	if status == http.StatusTooManyRequests || status >= 500 || status == http.StatusRequestTimeout || status == statusClientClosedRequest {
+func isModelUpstreamIssue(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone:
 		return true
+	default:
+		return false
 	}
-	return endpoint == "/responses" && status == http.StatusNotFound
 }
 
 func requestCanceled(ctx context.Context) bool {

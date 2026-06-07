@@ -32,23 +32,26 @@ type Provider struct {
 }
 
 type Model struct {
-	InternalID         string `json:"internal_id"`
-	ProviderID         string `json:"provider_id"`
-	OriginalID         string `json:"original_id"`
-	DisplayName        string `json:"display_name"`
-	SupportsChat       bool   `json:"supports_chat"`
-	SupportsResponses  bool   `json:"supports_responses"`
-	SupportsStream     bool   `json:"supports_stream"`
-	ContextLength      int64  `json:"context_length"`
-	Enabled            bool   `json:"enabled"`
-	AutoDisabled       bool   `json:"auto_disabled"`
-	AutoDisabledReason string `json:"auto_disabled_reason"`
-	FailCount          int    `json:"fail_count"`
-	WindowStart        string `json:"window_start"`
-	LastFailureAt      string `json:"last_failure_at"`
-	CooldownUntil      string `json:"cooldown_until"`
-	CooldownCount      int    `json:"cooldown_count"`
-	ProviderEnabled    bool   `json:"provider_enabled,omitempty"`
+	InternalID          string `json:"internal_id"`
+	ProviderID          string `json:"provider_id"`
+	OriginalID          string `json:"original_id"`
+	DisplayName         string `json:"display_name"`
+	SupportsChat        bool   `json:"supports_chat"`
+	SupportsResponses   bool   `json:"supports_responses"`
+	SupportsStream      bool   `json:"supports_stream"`
+	ContextLength       int64  `json:"context_length"`
+	Enabled             bool   `json:"enabled"`
+	AutoDisabled        bool   `json:"auto_disabled"`
+	AutoDisabledReason  string `json:"auto_disabled_reason"`
+	FailCount           int    `json:"fail_count"`
+	WindowStart         string `json:"window_start"`
+	LastFailureAt       string `json:"last_failure_at"`
+	CooldownUntil       string `json:"cooldown_until"`
+	CooldownCount       int    `json:"cooldown_count"`
+	UpstreamErrorStatus int    `json:"upstream_error_status"`
+	UpstreamErrorAt     string `json:"upstream_error_at"`
+	UpstreamError       string `json:"upstream_error"`
+	ProviderEnabled     bool   `json:"provider_enabled,omitempty"`
 }
 
 type ModelGroup struct {
@@ -209,6 +212,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_failure_at TEXT NOT NULL DEFAULT '',
 			cooldown_until TEXT NOT NULL DEFAULT '',
 			cooldown_count INTEGER NOT NULL DEFAULT 0,
+			upstream_error_status INTEGER NOT NULL DEFAULT 0,
+			upstream_error_at TEXT NOT NULL DEFAULT '',
+			upstream_error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(provider_id, original_id),
@@ -373,6 +379,21 @@ func (s *Store) ensureModelCooldownColumns(ctx context.Context) error {
 	}
 	if !columns["cooldown_count"] {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN cooldown_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["upstream_error_status"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN upstream_error_status INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["upstream_error_at"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN upstream_error_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !columns["upstream_error"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN upstream_error TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
