@@ -1,0 +1,230 @@
+name: 构建与发布
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    name: 构建前端
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/easy-router/web/package-lock.json
+
+      - name: 安装前端依赖
+        run: npm ci --prefix cmd/easy-router/web
+
+      - name: 构建前端
+        run: npm run web:build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/easy-router/web/dist
+          retention-days: 1
+
+  push-build:
+    name: 推送构建 ${{ matrix.target }}
+    if: github.ref_type != 'tag'
+    needs: web
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+            archive: tar.gz
+          - target: windows-x64
+            goos: windows
+            goarch: amd64
+            ext: .exe
+            archive: zip
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 清理旧前端产物
+        run: rm -rf cmd/easy-router/web/dist
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/easy-router/web/dist
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 构建并打包
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist artifacts
+          binary="easy-router-${TARGET}${EXT}"
+          package="easy-router-${TARGET}"
+
+          CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "dist/${binary}" \
+            ./cmd/easy-router
+
+          if [ "${ARCHIVE}" = "zip" ]; then
+            (cd dist && zip -q "../artifacts/${package}.zip" "${binary}")
+          else
+            tar -C dist -czf "artifacts/${package}.tar.gz" "${binary}"
+          fi
+
+      - name: 上传 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-router-${{ matrix.target }}
+          path: artifacts/*
+
+  release-build:
+    name: 发布构建 ${{ matrix.target }}
+    if: github.ref_type == 'tag'
+    needs: web
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            goos: windows
+            goarch: amd64
+            ext: .exe
+            archive: zip
+          - target: windows-arm64
+            goos: windows
+            goarch: arm64
+            ext: .exe
+            archive: zip
+          - target: darwin-x64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+            archive: tar.gz
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+            archive: tar.gz
+          - target: linux-x64
+            goos: linux
+            goarch: amd64
+            ext: ""
+            archive: tar.gz
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+            archive: tar.gz
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 清理旧前端产物
+        run: rm -rf cmd/easy-router/web/dist
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/easy-router/web/dist
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 构建并打包
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+          ARCHIVE: ${{ matrix.archive }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist artifacts
+          version="${VERSION//\//-}"
+          binary="easy-router-${version}-${TARGET}${EXT}"
+          package="easy-router-${version}-${TARGET}"
+
+          CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "dist/${binary}" \
+            ./cmd/easy-router
+
+          if [ "${ARCHIVE}" = "zip" ]; then
+            (cd dist && zip -q "../artifacts/${package}.zip" "${binary}")
+          else
+            tar -C dist -czf "artifacts/${package}.tar.gz" "${binary}"
+          fi
+
+      - name: 上传待发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: artifacts/*
+          retention-days: 7
+
+  publish-release:
+    name: 发布 GitHub Release
+    if: github.ref_type == 'tag'
+    needs: release-build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 下载待发布产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: release-assets/*
