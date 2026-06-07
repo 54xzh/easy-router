@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,440 @@ func TestConvertResponsesRejectsUnknownFields(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unsupported field error")
+	}
+}
+
+func TestConvertResponsesToChatWithToolsAndImage(t *testing.T) {
+	got, err := convertResponsesToChat(map[string]any{
+		"model": "gpt-4o",
+		"tools": []any{map[string]any{
+			"type":        "function",
+			"name":        "lookup",
+			"description": "Lookup data",
+			"parameters":  map[string]any{"type": "object"},
+		}},
+		"tool_choice": map[string]any{"type": "function", "name": "lookup"},
+		"input": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "what is this?"},
+					map[string]any{"type": "input_image", "image_url": "data:image/png;base64,abc", "detail": "low"},
+				},
+			},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": `{"id":"1"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": `{"ok":true}`},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := got["tools"].([]map[string]any)
+	if !ok || tools[0]["function"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("unexpected tools: %#v", got["tools"])
+	}
+	choice := got["tool_choice"].(map[string]any)
+	if choice["function"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("unexpected tool_choice: %#v", choice)
+	}
+	messages, ok := got["messages"].([]map[string]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("unexpected messages: %#v", got["messages"])
+	}
+	content, ok := messages[0]["content"].([]map[string]any)
+	if !ok || content[1]["type"] != "image_url" {
+		t.Fatalf("image was not converted: %#v", messages[0]["content"])
+	}
+	if messages[1]["role"] != "assistant" || messages[2]["role"] != "tool" {
+		t.Fatalf("tool call history was not converted: %#v", messages)
+	}
+}
+
+func TestConvertChatToResponses(t *testing.T) {
+	got, err := convertChatToResponses(map[string]any{
+		"model":      "gpt-4o",
+		"stream":     true,
+		"max_tokens": float64(128),
+		"messages": []any{
+			map[string]any{"role": "system", "content": "You are concise."},
+			map[string]any{"role": "user", "content": "Hello"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "gpt-4o" {
+		t.Fatalf("model was not preserved")
+	}
+	if got["max_output_tokens"] != float64(128) {
+		t.Fatalf("max_tokens was not mapped")
+	}
+	if got["instructions"] != "You are concise." {
+		t.Fatalf("unexpected instructions: %#v", got["instructions"])
+	}
+	input, ok := got["input"].([]map[string]any)
+	if !ok || len(input) != 1 || input[0]["role"] != "user" {
+		t.Fatalf("unexpected input: %#v", got["input"])
+	}
+}
+
+func TestConvertChatRejectsUnknownFields(t *testing.T) {
+	_, err := convertChatToResponses(map[string]any{
+		"model":           "gpt-4o",
+		"messages":        []any{},
+		"response_format": map[string]any{"type": "json_object"},
+	})
+	if err == nil {
+		t.Fatal("expected unsupported field error")
+	}
+}
+
+func TestConvertChatToResponsesWithToolsAndImage(t *testing.T) {
+	got, err := convertChatToResponses(map[string]any{
+		"model": "gpt-4o",
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "lookup",
+				"description": "Lookup data",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		}},
+		"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}},
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "what is this?"},
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,abc", "detail": "low"}},
+				},
+			},
+			map[string]any{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []any{map[string]any{
+					"id":   "call_1",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "lookup",
+						"arguments": `{"id":"1"}`,
+					},
+				}},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": `{"ok":true}`},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := got["tools"].([]map[string]any)
+	if !ok || tools[0]["name"] != "lookup" {
+		t.Fatalf("unexpected tools: %#v", got["tools"])
+	}
+	choice := got["tool_choice"].(map[string]any)
+	if choice["name"] != "lookup" {
+		t.Fatalf("unexpected tool_choice: %#v", choice)
+	}
+	input, ok := got["input"].([]map[string]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("unexpected input: %#v", got["input"])
+	}
+	content, ok := input[0]["content"].([]map[string]any)
+	if !ok || content[1]["type"] != "input_image" {
+		t.Fatalf("image was not converted: %#v", input[0]["content"])
+	}
+	if input[1]["type"] != "function_call" || input[2]["type"] != "function_call_output" {
+		t.Fatalf("tool call history was not converted: %#v", input)
+	}
+}
+
+func TestChatRequestUsesResponsesOnlyModel(t *testing.T) {
+	var upstreamPath string
+	var upstreamPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":         "resp_1",
+			"object":     "response",
+			"created_at": float64(123),
+			"model":      "upstream-responses",
+			"output": []any{map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []any{map[string]any{
+					"type": "output_text",
+					"text": "pong",
+				}},
+			}},
+			"usage": map[string]any{
+				"input_tokens":  float64(2),
+				"output_tokens": float64(3),
+				"total_tokens":  float64(5),
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	model := addProxyTestModel(t, s, "p1", "upstream-responses", upstream.URL)
+	model = setProxyTestModelSupport(t, s, model, false, true)
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"coder-fast",
+		"messages":[
+			{"role":"system","content":"be brief"},
+			{"role":"user","content":"ping"}
+		],
+		"max_tokens":16
+	}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if upstreamPath != "/responses" {
+		t.Fatalf("expected /responses upstream, got %q", upstreamPath)
+	}
+	if upstreamPayload["model"] != "upstream-responses" || upstreamPayload["instructions"] != "be brief" {
+		t.Fatalf("unexpected upstream payload: %#v", upstreamPayload)
+	}
+	input, ok := upstreamPayload["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("unexpected upstream input: %#v", upstreamPayload["input"])
+	}
+	var response map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	choices, _ := response["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("unexpected chat response: %#v", response)
+	}
+	message, _ := choices[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "pong" {
+		t.Fatalf("unexpected converted content: %#v", response)
+	}
+}
+
+func TestResponsesRequestConvertsChatModelResponse(t *testing.T) {
+	var upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":      "chatcmpl_1",
+			"object":  "chat.completion",
+			"created": float64(123),
+			"model":   "upstream-chat",
+			"choices": []any{map[string]any{
+				"index": float64(0),
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "pong",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     float64(2),
+				"completion_tokens": float64(3),
+				"total_tokens":      float64(5),
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	model := addProxyTestModel(t, s, "p1", "upstream-chat", upstream.URL)
+	model = setProxyTestModelSupport(t, s, model, true, false)
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"coder-fast","input":"ping"}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "responses")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if upstreamPath != "/chat/completions" {
+		t.Fatalf("expected /chat/completions upstream, got %q", upstreamPath)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["object"] != "response" || response["output_text"] != "pong" {
+		t.Fatalf("unexpected converted response: %#v", response)
+	}
+}
+
+func TestConvertChatToolCallResponseToResponses(t *testing.T) {
+	got, err := convertChatResponseToResponses([]byte(`{
+		"id":"chatcmpl_1",
+		"created":123,
+		"model":"upstream-chat",
+		"choices":[{
+			"message":{
+				"role":"assistant",
+				"content":null,
+				"tool_calls":[{
+					"id":"call_1",
+					"type":"function",
+					"function":{"name":"lookup","arguments":"{\"id\":\"1\"}"}
+				}]
+			},
+			"finish_reason":"tool_calls"
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatal(err)
+	}
+	output, _ := response["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("unexpected output: %#v", response)
+	}
+	call := output[0].(map[string]any)
+	if call["type"] != "function_call" || call["name"] != "lookup" || call["call_id"] != "call_1" {
+		t.Fatalf("unexpected function call output: %#v", call)
+	}
+}
+
+func TestConvertResponsesToolCallResponseToChat(t *testing.T) {
+	got, err := convertResponsesResponseToChat([]byte(`{
+		"id":"resp_1",
+		"created_at":123,
+		"model":"upstream-responses",
+		"output":[{
+			"type":"function_call",
+			"id":"fc_1",
+			"call_id":"call_1",
+			"name":"lookup",
+			"arguments":"{\"id\":\"1\"}",
+			"status":"completed"
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatal(err)
+	}
+	choice := response["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("unexpected finish_reason: %#v", choice)
+	}
+	message := choice["message"].(map[string]any)
+	toolCalls := message["tool_calls"].([]any)
+	call := toolCalls[0].(map[string]any)
+	if call["id"] != "call_1" || call["function"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("unexpected tool_calls: %#v", message)
+	}
+}
+
+func TestStreamResponsesToChatConvertsTextDelta(t *testing.T) {
+	body := strings.NewReader(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","response_id":"resp_1","delta":"pong"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"upstream-responses"}}
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamResponsesToChat(w, body, "upstream-responses"); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"object":"chat.completion.chunk"`) || !strings.Contains(out, `"content":"pong"`) {
+		t.Fatalf("unexpected chat stream: %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("chat stream did not finish: %s", out)
+	}
+}
+
+func TestStreamChatToResponsesConvertsTextDelta(t *testing.T) {
+	body := strings.NewReader(`data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{"content":"pong"},"finish_reason":null}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamChatToResponses(w, body, "upstream-chat"); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, "response.output_text.delta") || !strings.Contains(out, `"delta":"pong"`) {
+		t.Fatalf("unexpected responses stream: %s", out)
+	}
+	if !strings.Contains(out, "response.completed") {
+		t.Fatalf("responses stream did not finish: %s", out)
+	}
+}
+
+func TestStreamResponsesToChatConvertsToolCallDelta(t *testing.T) {
+	body := strings.NewReader(`event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"id\""}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":":\"1\"}"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"upstream-responses"}}
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamResponsesToChat(w, body, "upstream-responses"); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"tool_calls"`) || !strings.Contains(out, `"name":"lookup"`) {
+		t.Fatalf("unexpected chat tool stream: %s", out)
+	}
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("chat tool stream did not finish as tool_calls: %s", out)
+	}
+}
+
+func TestStreamChatToResponsesConvertsToolCallDelta(t *testing.T) {
+	body := strings.NewReader(`data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"id\":\"1\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamChatToResponses(w, body, "upstream-chat"); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, "response.output_item.added") || !strings.Contains(out, `"name":"lookup"`) {
+		t.Fatalf("unexpected responses tool stream: %s", out)
+	}
+	if !strings.Contains(out, "response.function_call_arguments.delta") || !strings.Contains(out, `"delta"`) || !strings.Contains(out, `id`) {
+		t.Fatalf("tool arguments were not streamed: %s", out)
+	}
+	if !strings.Contains(out, "response.function_call_arguments.done") {
+		t.Fatalf("tool arguments did not finish: %s", out)
 	}
 }
 
@@ -425,6 +860,17 @@ func addProxyTestModel(t *testing.T, s *store.Store, providerID, originalID, bas
 		t.Fatal(err)
 	}
 	return model
+}
+
+func setProxyTestModelSupport(t *testing.T, s *store.Store, model store.Model, supportsChat bool, supportsResponses bool) store.Model {
+	t.Helper()
+	model.SupportsChat = supportsChat
+	model.SupportsResponses = supportsResponses
+	updated, err := s.UpsertModel(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
 }
 
 func addProxyTestRoute(t *testing.T, s *store.Store, routeID string, modelIDs ...string) {
