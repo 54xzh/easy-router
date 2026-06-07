@@ -209,7 +209,7 @@ export default function App() {
         <div className="toolbar">
           <div>
             <h1 className="page-title">{navItems.find((item) => item.key === active)?.label}</h1>
-            <div className="page-subtitle">{subtitle(active)}</div>
+
           </div>
           <div className="row">
             <Button variant="secondary" onPress={() => run(refresh)}>
@@ -244,24 +244,7 @@ export default function App() {
   );
 }
 
-function subtitle(tab: TabKey): string {
-  switch (tab) {
-    case "switch":
-      return "查看路由顺序，快速禁用路由、组或单个模型。";
-    case "providers":
-      return "配置 OpenAI 兼容提供商，拉取或手动添加原始模型。";
-    case "models":
-      return "查看内部模型 ID、能力、状态和自动禁用原因。";
-    case "groups":
-      return "把多个内部模型组成一组，并设置组内使用顺序。";
-    case "routes":
-      return "创建客户端可见的虚拟模型。";
-    case "logs":
-      return "按请求查看最终模型、耗时、错误和每次尝试。";
-    case "settings":
-      return "管理代理访问密钥、模型暴露策略和管理员密码。";
-  }
-}
+
 
 function Login({
   error,
@@ -380,7 +363,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
       <div className="section row" style={{ justifyContent: "space-between" }}>
         <div>
           <h2 style={{ margin: 0 }}>提供商</h2>
-          <div className="muted">模型只在所属提供商里添加和查看。</div>
+
         </div>
         <Button onPress={openAdd}>
           <Plus size={16} />
@@ -390,7 +373,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
 
       <div className="provider-list">
         {data.providers.length === 0 ? (
-          <div className="section muted">还没有提供商。点“添加提供商”开始配置。</div>
+          <div className="section muted">暂无提供商</div>
         ) : null}
         {data.providers.map((provider) => {
           const providerModels = modelsByProvider.get(provider.id) ?? [];
@@ -553,7 +536,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                   <Modal.Heading>
                     {data.providers.some((provider) => provider.id === form.id) ? "编辑提供商" : "添加提供商"}
                   </Modal.Heading>
-                  <p className="muted">填写 OpenAI 兼容接口信息。保存后模型仍在列表展开项里管理。</p>
+
                 </Modal.Header>
                 <Modal.Body className="config-modal-body">
                   <div className="grid-2">
@@ -565,7 +548,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                     >
                       <Label>提供商 ID</Label>
                       <Input placeholder="openai" />
-                      <Description>保存后不能修改。模型 ID 会显示为 provider/model。</Description>
+                      <Description>保存后不可修改</Description>
                     </TextField>
                     <TextField fullWidth value={form.name} onChange={(name) => setForm({ ...form, name })}>
                       <Label>显示名称</Label>
@@ -619,7 +602,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
 
 function ProviderModels({ models }: { models: Model[] }) {
   if (models.length === 0) {
-    return <div className="empty-state">这个提供商还没有添加模型。</div>;
+    return <div className="empty-state">暂无模型</div>;
   }
   return (
     <div className="table-wrap provider-models">
@@ -634,10 +617,7 @@ function ProviderModels({ models }: { models: Model[] }) {
         <tbody>
           {models.map((model) => (
             <tr key={model.internal_id}>
-              <td>
-                <div>{model.display_name}</div>
-                <span className="code">{model.internal_id}</span>
-              </td>
+              <td>{model.internal_id}</td>
               <td>
                 <div className="row">
                   {model.supports_chat ? <span className="badge badge-success">Chat</span> : null}
@@ -684,10 +664,7 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
         <tbody>
           {data.models.map((model) => (
             <tr key={model.internal_id}>
-              <td>
-                <div>{model.display_name}</div>
-                <span className="code">{model.internal_id}</span>
-              </td>
+              <td>{model.internal_id}</td>
               <td>
                 <div className="row">
                   <LabeledSwitch
@@ -877,7 +854,7 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
       <div className="section row list-header">
         <div>
           <h2 style={{ margin: 0 }}>模型组</h2>
-          <div className="muted">默认只显示列表，需要修改时再打开弹窗。</div>
+
         </div>
         <Button onPress={openAdd}>
           <Plus size={16} />
@@ -907,14 +884,14 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                   <Modal.CloseTrigger />
                   <Modal.Header>
                     <Modal.Heading>{isEditing ? "编辑模型组" : "添加模型组"}</Modal.Heading>
-                    <p className="muted">从模型列表中选择组内模型，再用上下按钮调整顺序。</p>
+
                   </Modal.Header>
                   <Modal.Body className="config-modal-body">
                     <div className="grid-2">
                       <TextField fullWidth isDisabled={isEditing} value={form.id} onChange={(id) => setForm({ ...form, id })}>
                         <Label>组 ID</Label>
                         <Input placeholder="留空自动生成，或填写 gpt-fast" />
-                        <Description>保存后不建议修改。路由会用它引用这个组。</Description>
+                        <Description>保存后不可修改</Description>
                       </TextField>
                       <TextField fullWidth value={form.name} onChange={(name) => setForm({ ...form, name })}>
                         <Label>组名称</Label>
@@ -953,8 +930,8 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                           placeholder={availableModels.length === 0 ? "没有可添加的模型" : "选择模型"}
                           options={availableModels.map((model) => ({
                             id: model.internal_id,
-                            label: `${model.display_name || model.original_id} · ${model.internal_id}`,
-                            textValue: `${model.display_name || model.original_id} ${model.internal_id}`,
+                            label: model.internal_id,
+                            textValue: model.internal_id,
                           }))}
                         />
                         <Button
@@ -969,7 +946,7 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       </div>
 
                       {form.members.length === 0 ? (
-                        <div className="empty-state">还没有组内模型。先从上方选择一个模型。</div>
+                        <div className="empty-state">暂无组内模型</div>
                       ) : (
                         <div className="config-list">
                           {form.members.map((member, index) => {
@@ -978,8 +955,7 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                               <div className="config-row" key={member.model_id}>
                                 <div className="config-index">{index + 1}</div>
                                 <div className="config-row-main">
-                                  <strong>{modelName(data.models, member.model_id)}</strong>
-                                  <span className="code">{member.model_id}</span>
+                                  {member.model_id}
                                   {model?.enabled === false || model?.auto_disabled ? (
                                     <Status text="不可用" />
                                   ) : (
@@ -1142,7 +1118,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
       <div className="section row list-header">
         <div>
           <h2 style={{ margin: 0 }}>路由模型</h2>
-          <div className="muted">配置路由目标。</div>
+
         </div>
         <Button onPress={openAdd}>
           <Plus size={16} />
@@ -1174,7 +1150,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                   <Modal.CloseTrigger />
                   <Modal.Header>
                     <Modal.Heading>{isEditing ? "编辑路由" : "添加路由"}</Modal.Heading>
-                    <p className="muted">选择模型组或单个模型。</p>
+
                   </Modal.Header>
                   <Modal.Body className="config-modal-body">
                     <div className="grid-2">
@@ -1220,7 +1196,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                             const name = routeTargetName(targetType, target);
                             return {
                               id,
-                              label: `${name} · ${id}`,
+                              label: id,
                               textValue: `${name} ${id}`,
                             };
                           })}
@@ -1237,7 +1213,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       </div>
 
                       {form.steps.length === 0 ? (
-                        <div className="empty-state">还没有目标。先从上方选择一个。</div>
+                        <div className="empty-state">暂无目标</div>
                       ) : (
                         <div className="config-list">
                           {form.steps.map((step, index) => (
@@ -1245,8 +1221,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                               <div className="config-index">{index + 1}</div>
                               <div className="config-row-main">
                                 <span className="badge">{step.target_type === "group" ? "模型组" : "模型"}</span>
-                                <strong>{routeStepName(data, step)}</strong>
-                                <span className="code">{step.target_id}</span>
+                                {step.target_id}
                               </div>
                               <div className="row config-row-actions">
                                 <LabeledSwitch
@@ -1480,7 +1455,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
   }, [data.groups, disabled, run, selected, toggle]);
 
   if (!selected) {
-    return <div className="surface section muted">还没有路由模型。请先到“路由配置”创建一个。</div>;
+    return <div className="surface section muted">暂无路由</div>;
   }
 
   return (
@@ -1496,7 +1471,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
             label: route.name || route.id,
           }))}
         />
-        <span className="muted">左侧目标直接连接右侧虚拟模型；模型组内按组策略选择。</span>
+
       </div>
       <div className="flow-shell">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }}>
@@ -1764,7 +1739,7 @@ function ListGroups({
   return (
     <div className="section stack">
       {groups.length === 0 ? (
-        <div className="empty-state">还没有模型组。点“添加模型组”开始配置。</div>
+        <div className="empty-state">暂无模型组</div>
       ) : null}
       {groups.map((group) => (
         <div className="row" key={group.id} style={{ justifyContent: "space-between" }}>
@@ -1810,7 +1785,7 @@ function ListRoutes({
   return (
     <div className="section stack">
       {routes.length === 0 ? (
-        <div className="empty-state">还没有路由。点“添加路由”开始配置。</div>
+        <div className="empty-state">暂无路由</div>
       ) : null}
       {routes.map((route) => (
         <div className="row" key={route.id} style={{ justifyContent: "space-between" }}>
@@ -1860,8 +1835,7 @@ function strategyLabel(strategy: ModelGroup["strategy"]) {
 }
 
 function modelName(models: Model[], id: string) {
-  const model = models.find((item) => item.internal_id === id);
-  return model?.display_name || model?.original_id || id;
+  return id;
 }
 
 function groupName(groups: ModelGroup[], id: string) {
@@ -1881,7 +1855,7 @@ function routeTargetID(type: "model" | "group", target?: ModelGroup | Model) {
 function routeTargetName(type: "model" | "group", target: ModelGroup | Model) {
   return type === "group"
     ? (target as ModelGroup).name || (target as ModelGroup).id
-    : (target as Model).display_name || (target as Model).original_id || (target as Model).internal_id;
+    : (target as Model).internal_id;
 }
 
 function routeStepName(data: AppData, step: RouteStepForm) {
