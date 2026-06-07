@@ -53,12 +53,10 @@ jobs:
             goos: linux
             goarch: arm64
             ext: ""
-            archive: tar.gz
           - target: windows-x64
             goos: windows
             goarch: amd64
             ext: .exe
-            archive: zip
 
     steps:
       - name: 拉取代码
@@ -79,20 +77,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: 构建并打包
+      - name: 构建二进制
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           TARGET: ${{ matrix.target }}
           EXT: ${{ matrix.ext }}
-          ARCHIVE: ${{ matrix.archive }}
         run: |
           set -euo pipefail
 
-          mkdir -p dist artifacts
+          mkdir -p dist
           binary="easy-router-${TARGET}${EXT}"
-          package="easy-router-${TARGET}"
 
           CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
             -trimpath \
@@ -100,17 +96,11 @@ jobs:
             -o "dist/${binary}" \
             ./cmd/easy-router
 
-          if [ "${ARCHIVE}" = "zip" ]; then
-            (cd dist && zip -q "../artifacts/${package}.zip" "${binary}")
-          else
-            tar -C dist -czf "artifacts/${package}.tar.gz" "${binary}"
-          fi
-
       - name: 上传 Actions 产物
         uses: actions/upload-artifact@v4
         with:
           name: easy-router-${{ matrix.target }}
-          path: artifacts/*
+          path: dist/*
 
   release-build:
     name: 发布构建 ${{ matrix.target }}
