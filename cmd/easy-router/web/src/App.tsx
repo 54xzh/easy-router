@@ -20,6 +20,8 @@ import {
   Copy,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   GitBranch,
   KeyRound,
   ListTree,
@@ -1563,14 +1565,41 @@ function SettingsView({ data, run }: { data: AppData; run: (task: () => Promise<
   const [retention, setRetention] = useState(data.settings.log_retention_days ?? "30");
   const [keyName, setKeyName] = useState("默认客户端");
   const [copiedKey, setCopiedKey] = useState("");
+  const [visibleTokens, setVisibleTokens] = useState<Record<string, string>>({});
   const [copyError, setCopyError] = useState("");
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
 
+  async function getToken(id: string) {
+    if (visibleTokens[id]) {
+      return visibleTokens[id];
+    }
+    const { token } = await api<{ token: string }>(`/api/admin/proxy-keys/${enc(id)}/token`);
+    return token;
+  }
+
+  async function toggleToken(id: string) {
+    setCopyError("");
+    if (visibleTokens[id]) {
+      setVisibleTokens((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+    try {
+      const token = await getToken(id);
+      setVisibleTokens((current) => ({ ...current, [id]: token }));
+    } catch (err) {
+      setCopyError(err instanceof Error ? err.message : "显示失败，请稍后重试。");
+    }
+  }
+
   async function copyToken(id: string) {
     setCopyError("");
     try {
-      const { token } = await api<{ token: string }>(`/api/admin/proxy-keys/${enc(id)}/token`);
+      const token = await getToken(id);
       await copyText(token);
       setCopiedKey(id);
       window.setTimeout(() => {
@@ -1644,16 +1673,23 @@ function SettingsView({ data, run }: { data: AppData; run: (task: () => Promise<
           <tbody>
             {data.keys.map((key) => {
               const copied = copiedKey === key.id;
+              const visibleToken = visibleTokens[key.id];
               return (
                 <tr key={key.id}>
                   <td>{key.name}</td>
                   <td>
                     <div className="key-token">
-                      <span className="code secret-code">{key.prefix}...</span>
-                      <Button size="sm" variant="secondary" onPress={() => copyToken(key.id)}>
-                        {copied ? <Check size={14} /> : <Copy size={14} />}
-                        {copied ? "已复制" : "复制"}
-                      </Button>
+                      <span className="code secret-code">{visibleToken || `${key.prefix}...`}</span>
+                      <div className="row key-actions">
+                        <Button size="sm" variant="secondary" onPress={() => toggleToken(key.id)}>
+                          {visibleToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                          {visibleToken ? "隐藏" : "显示"}
+                        </Button>
+                        <Button size="sm" variant="secondary" onPress={() => copyToken(key.id)}>
+                          {copied ? <Check size={14} /> : <Copy size={14} />}
+                          {copied ? "已复制" : "复制"}
+                        </Button>
+                      </div>
                     </div>
                   </td>
                   <td>

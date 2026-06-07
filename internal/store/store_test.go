@@ -53,8 +53,12 @@ func TestCreateProxyKeyStoresReusableSecret(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("unexpected key count: %d", len(keys))
 	}
-	if keys[0].Token != created.Token {
-		t.Fatalf("listed token mismatch: %s", keys[0].Token)
+	token, err := s.GetProxyKeyToken(keys[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != created.Token {
+		t.Fatalf("stored token mismatch: %s", token)
 	}
 }
 

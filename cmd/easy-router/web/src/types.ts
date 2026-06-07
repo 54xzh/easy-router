@@ -70,7 +70,6 @@ export type ProxyKey = {
   enabled: boolean;
   created_at: string;
   last_used_at: string;
-  token?: string;
 };
 
 export type AttemptLog = {
@@ -106,4 +105,3 @@ export type Settings = {
   models_expose_raw?: string;
   log_retention_days?: string;
 };
-

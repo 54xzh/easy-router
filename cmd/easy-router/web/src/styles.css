@@ -420,6 +420,11 @@ select {
   align-items: center;
 }
 
+.key-actions {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
 .secret-code {
   display: block;
   max-width: 620px;
