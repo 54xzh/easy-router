@@ -1620,7 +1620,7 @@ function SettingsView({ data, run }: { data: AppData; run: (task: () => Promise<
       <div className="section stack">
         <h2>代理访问密钥</h2>
         {copyError ? <div className="error">{copyError}</div> : null}
-        <div className="row">
+        <div className="row key-create-row">
           <TextField value={keyName} onChange={setKeyName}>
             <Label>密钥名称</Label>
             <Input />
