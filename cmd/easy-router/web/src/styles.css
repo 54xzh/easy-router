@@ -328,6 +328,27 @@ select {
   gap: 14px;
 }
 
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirm-message,
+.confirm-warning {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm-target {
+  word-break: break-word;
+}
+
 .select-field {
   min-width: 180px;
   display: flex;

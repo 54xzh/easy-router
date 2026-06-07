@@ -304,6 +304,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
   const [remoteModels, setRemoteModels] = useState<Record<string, RemoteModel[]>>({});
   const [selectedRemote, setSelectedRemote] = useState<Record<string, string[]>>({});
   const [manualModel, setManualModel] = useState<Record<string, string>>({});
+  const [deletingProvider, setDeletingProvider] = useState<Provider | null>(null);
   const autoDisableOn = autoDisableEnabled(data.settings);
 
   const modelsByProvider = useMemo(() => {
@@ -315,6 +316,9 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
     });
     return map;
   }, [data.models]);
+  const deletingProviderModelCount = deletingProvider
+    ? (modelsByProvider.get(deletingProvider.id)?.length ?? 0)
+    : 0;
 
   function openAdd() {
     setForm(blankProvider);
@@ -358,6 +362,13 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
       }
       return { ...current, [providerID]: Array.from(selected) };
     });
+  }
+
+  function confirmDeleteProvider() {
+    if (!deletingProvider) return;
+    const providerID = deletingProvider.id;
+    setDeletingProvider(null);
+    run(async () => del(`/api/admin/providers/${enc(providerID)}`));
   }
 
   return (
@@ -406,7 +417,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                   <Button
                     size="sm"
                     variant="danger"
-                    onPress={() => run(async () => del(`/api/admin/providers/${enc(provider.id)}`))}
+                    onPress={() => setDeletingProvider(provider)}
                   >
                     <Trash2 size={14} />
                   </Button>
@@ -598,6 +609,14 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
+      <DeleteConfirmModal
+        isOpen={Boolean(deletingProvider)}
+        title="删除提供商"
+        targetName={deletingProvider ? deletingProvider.name || deletingProvider.id : ""}
+        description={providerDeleteDescription(deletingProviderModelCount)}
+        onCancel={() => setDeletingProvider(null)}
+        onConfirm={confirmDeleteProvider}
+      />
     </div>
   );
 }
@@ -813,6 +832,7 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
   const [editingID, setEditingID] = useState("");
   const [open, setOpen] = useState(false);
   const [modelToAdd, setModelToAdd] = useState("");
+  const [deletingGroup, setDeletingGroup] = useState<ModelGroup | null>(null);
 
   const isEditing = Boolean(editingID);
   const selectedModels = new Set(form.members.map((member) => member.model_id));
@@ -887,6 +907,13 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
     });
   }
 
+  function confirmDeleteGroup() {
+    if (!deletingGroup) return;
+    const groupID = deletingGroup.id;
+    setDeletingGroup(null);
+    run(async () => del(`/api/admin/groups/${enc(groupID)}`));
+  }
+
   return (
     <div className="surface">
       <div className="section row list-header">
@@ -903,7 +930,7 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
       <ListGroups
         groups={data.groups}
         edit={openEdit}
-        remove={(id) => run(async () => del(`/api/admin/groups/${enc(id)}`))}
+        remove={setDeletingGroup}
       />
 
       <Modal>
@@ -1065,6 +1092,14 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
+      <DeleteConfirmModal
+        isOpen={Boolean(deletingGroup)}
+        title="删除模型组"
+        targetName={deletingGroup ? deletingGroup.name || deletingGroup.id : ""}
+        description="删除后会移除这个模型组和组内成员。使用这个模型组的路由不会自动删除，请之后检查路由目标。"
+        onCancel={() => setDeletingGroup(null)}
+        onConfirm={confirmDeleteGroup}
+      />
     </div>
   );
 }
@@ -1075,6 +1110,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
   const [open, setOpen] = useState(false);
   const [targetType, setTargetType] = useState<"model" | "group">("group");
   const [targetID, setTargetID] = useState("");
+  const [deletingRoute, setDeletingRoute] = useState<Route | null>(null);
 
   const isEditing = Boolean(editingID);
   const selectedTargets = new Set(form.steps.map((step) => targetKey(step.target_type, step.target_id)));
@@ -1164,6 +1200,13 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
     });
   }
 
+  function confirmDeleteRoute() {
+    if (!deletingRoute) return;
+    const routeID = deletingRoute.id;
+    setDeletingRoute(null);
+    run(async () => del(`/api/admin/routes/${enc(routeID)}`));
+  }
+
   return (
     <div className="surface">
       <div className="section row list-header">
@@ -1182,7 +1225,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
         groups={data.groups}
         models={data.models}
         edit={openEdit}
-        remove={(id) => run(async () => del(`/api/admin/routes/${enc(id)}`))}
+        remove={setDeletingRoute}
       />
 
       <Modal>
@@ -1337,6 +1380,14 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
+      <DeleteConfirmModal
+        isOpen={Boolean(deletingRoute)}
+        title="删除路由"
+        targetName={deletingRoute ? deletingRoute.name || deletingRoute.id : ""}
+        description="删除后会移除这个虚拟模型和它的目标顺序。客户端将不能再使用这个虚拟模型名。"
+        onCancel={() => setDeletingRoute(null)}
+        onConfirm={confirmDeleteRoute}
+      />
     </div>
   );
 }
@@ -1853,7 +1904,7 @@ function ListGroups({
 }: {
   groups: ModelGroup[];
   edit: (group: ModelGroup) => void;
-  remove: (id: string) => void;
+  remove: (group: ModelGroup) => void;
 }) {
   return (
     <div className="section stack">
@@ -1878,7 +1929,7 @@ function ListGroups({
             <Button size="sm" variant="tertiary" onPress={() => edit(group)}>
               编辑
             </Button>
-            <Button size="sm" variant="danger" onPress={() => remove(group.id)}>
+            <Button size="sm" variant="danger" onPress={() => remove(group)}>
               <Trash2 size={14} />
             </Button>
           </div>
@@ -1899,7 +1950,7 @@ function ListRoutes({
   groups: ModelGroup[];
   models: Model[];
   edit: (route: Route) => void;
-  remove: (id: string) => void;
+  remove: (route: Route) => void;
 }) {
   return (
     <div className="section stack">
@@ -1941,7 +1992,7 @@ function ListRoutes({
               <Button size="sm" variant="tertiary" onPress={() => edit(route)}>
                 编辑
               </Button>
-              <Button size="sm" variant="danger" onPress={() => remove(route.id)}>
+              <Button size="sm" variant="danger" onPress={() => remove(route)}>
                 <Trash2 size={14} />
               </Button>
             </div>
@@ -2106,6 +2157,75 @@ function replaceItem<T>(items: T[], index: number, item: T) {
 
 function removeItem<T>(items: T[], index: number) {
   return items.filter((_, currentIndex) => currentIndex !== index);
+}
+
+function providerDeleteDescription(modelCount: number) {
+  if (modelCount === 0) {
+    return "删除后会移除这个提供商配置。";
+  }
+  return `删除后会移除这个提供商配置，并同时删除 ${modelCount} 个已添加模型。相关模型组和路由请之后检查。`;
+}
+
+function DeleteConfirmModal({
+  isOpen,
+  title,
+  targetName,
+  description,
+  onCancel,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  title: string;
+  targetName: string;
+  description: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal>
+      <Modal.Backdrop
+        isOpen={isOpen}
+        onOpenChange={(open) => {
+          if (!open) onCancel();
+        }}
+        variant="blur"
+      >
+        <Modal.Container size="sm">
+          <Modal.Dialog className="confirm-dialog" role="alertdialog">
+            {(dialog: { close: () => void }) => (
+              <>
+                <Modal.CloseTrigger />
+                <Modal.Header>
+                  <Modal.Heading>{title}</Modal.Heading>
+                </Modal.Header>
+                <Modal.Body className="confirm-body">
+                  <p className="confirm-message">
+                    确认删除 <span className="code confirm-target">{targetName}</span> 吗？
+                  </p>
+                  <p className="muted confirm-warning">此操作不能直接撤销。{description}</p>
+                </Modal.Body>
+                <Modal.Footer>
+                  <Button variant="tertiary" onPress={dialog.close}>
+                    取消
+                  </Button>
+                  <Button
+                    variant="danger"
+                    onPress={() => {
+                      onConfirm();
+                      dialog.close();
+                    }}
+                  >
+                    <Trash2 size={16} />
+                    确认删除
+                  </Button>
+                </Modal.Footer>
+              </>
+            )}
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
+  );
 }
 
 function moveItem<T>(items: T[], index: number, delta: number) {
