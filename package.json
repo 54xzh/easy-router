@@ -1,0 +1,13 @@
+{
+  "name": "easy-router",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "web:install": "npm --prefix cmd/easy-router/web install",
+    "web:dev": "npm --prefix cmd/easy-router/web run dev",
+    "web:build": "npm --prefix cmd/easy-router/web run build",
+    "build": "npm --prefix cmd/easy-router/web run build && go build -o bin/easy-router.exe ./cmd/easy-router",
+    "test": "go test ./..."
+  }
+}
+

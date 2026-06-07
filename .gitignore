@@ -1,0 +1,12 @@
+.cache/
+.go-build-cache/
+.go-mod-cache/
+.env
+.env.local
+bin/
+data/
+*.log
+*.err.log
+
+cmd/easy-router/web/node_modules/
+cmd/easy-router/web/tsconfig.tsbuildinfo
