@@ -50,6 +50,7 @@ import { api, del, enc, patch, post, put } from "./api";
 import type {
   Model,
   ModelGroup,
+  ModelGroupMember,
   Provider,
   ProxyKey,
   RequestLog,
@@ -1343,6 +1344,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
 function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<void>) => void }) {
   const [selectedID, setSelectedID] = useState("");
   const selected = data.routes.find((route) => route.id === (selectedID || data.routes[0]?.id));
+  const autoDisableOn = autoDisableEnabled(data.settings);
 
   function stepDisabled(step: RouteStep) {
     return !routeStepEnabled(selected, step);
@@ -1440,36 +1442,48 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       const y = stepLayouts[index].y;
       if (step.target_type === "group") {
         const group = data.groups.find((item) => item.id === step.target_id);
-        const isGroupDisabled = stepDisabled(step);
+        const isRouteDisabled = stepDisabled(step);
+        const groupState = routeGroupStateLabel(group);
+        const isGroupDimmed = isRouteDisabled || Boolean(groupState);
         nodes.push({
           id: `step-${index}`,
           position: { x: leftX, y },
           sourcePosition: Position.Right,
           data: {
             label: (
-              <FlowBox className="flow-node-group" disabled={isGroupDisabled}>
+              <FlowBox className="flow-node-group" disabled={isGroupDimmed}>
                 <div className="flow-node-header">
                   <div className="flow-node-heading">
                     <span className="flow-node-title" title={group?.name ?? step.target_id}>
                       {group?.name ?? step.target_id}
                     </span>
                     <span className="flow-node-meta">{group ? strategyLabel(group.strategy) : "模型组"}</span>
+                    {groupState ? <span className="flow-node-meta flow-state-label">{groupState}</span> : null}
                   </div>
                   <LabeledSwitch
                     compact
                     label=""
-                    selected={!isGroupDisabled}
+                    selected={!isRouteDisabled}
                     onChange={(enabled) => toggleStep(index, enabled)}
                   />
                 </div>
                 <div className="flow-member-list">
                   {group?.members.map((member) => {
                     const modelOff = modelOverrideDisabled(member.model_id);
+                    const model = member.model ?? data.models.find((item) => item.internal_id === member.model_id);
+                    const memberState = routeMemberStateLabel(member, model, autoDisableOn);
+                    const isMemberDimmed = !isGroupDimmed && (modelOff || Boolean(memberState));
                     return (
-                      <div className="flow-member-row" key={member.model_id}>
-                        <span className="code" title={member.model_id}>
-                          {member.model_id}
-                        </span>
+                      <div
+                        className={`flow-member-row ${isMemberDimmed ? "flow-member-row-dimmed" : ""}`}
+                        key={member.model_id}
+                      >
+                        <div className="flow-node-heading">
+                          <span className="code" title={memberState ? `${member.model_id} ${memberState}` : member.model_id}>
+                            {member.model_id}
+                          </span>
+                          {memberState ? <span className="flow-node-meta flow-state-label">{memberState}</span> : null}
+                        </div>
                         <LabeledSwitch
                           compact
                           label=""
@@ -1486,22 +1500,28 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
           type: "default",
         });
       } else {
-        const isModelDisabled = stepDisabled(step);
+        const isRouteDisabled = stepDisabled(step);
+        const model = data.models.find((item) => item.internal_id === step.target_id);
+        const modelState = routeModelStateLabel(model, autoDisableOn);
+        const isModelDimmed = isRouteDisabled || Boolean(modelState);
         nodes.push({
           id: `step-${index}`,
           position: { x: leftX, y },
           sourcePosition: Position.Right,
           data: {
             label: (
-              <FlowBox className="flow-node-model" disabled={isModelDisabled}>
+              <FlowBox className="flow-node-model" disabled={isModelDimmed}>
                 <div className="flow-node-header">
-                  <span className="code flow-code-main" title={step.target_id}>
-                    {step.target_id}
-                  </span>
+                  <div className="flow-node-heading">
+                    <span className="code flow-code-main" title={modelState ? `${step.target_id} ${modelState}` : step.target_id}>
+                      {step.target_id}
+                    </span>
+                    {modelState ? <span className="flow-node-meta flow-state-label">{modelState}</span> : null}
+                  </div>
                   <LabeledSwitch
                     compact
                     label=""
-                    selected={!isModelDisabled}
+                    selected={!isRouteDisabled}
                     onChange={(enabled) => toggleStep(index, enabled)}
                   />
                 </div>
@@ -1520,7 +1540,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       });
     });
     return { nodes, edges };
-  }, [data.groups, run, selected]);
+  }, [autoDisableOn, data.groups, data.models, run, selected]);
 
   if (!selected) {
     return <div className="surface section muted">暂无路由</div>;
@@ -1951,6 +1971,25 @@ function modelName(models: Model[], id: string) {
 function groupName(groups: ModelGroup[], id: string) {
   const group = groups.find((item) => item.id === id);
   return group?.name || id;
+}
+
+function routeModelStateLabel(model: Model | undefined, autoDisableOn: boolean) {
+  if (!model) return "";
+  if (model.provider_enabled === false) return "提供商未启用";
+  if (!model.enabled) return "未启用";
+  if (autoDisableOn && model.auto_disabled) return "已禁用";
+  if (autoDisableOn && modelCoolingDown(model)) return "冷却中";
+  return "";
+}
+
+function routeMemberStateLabel(member: ModelGroupMember, model: Model | undefined, autoDisableOn: boolean) {
+  if (!member.enabled) return "未启用";
+  return routeModelStateLabel(model, autoDisableOn);
+}
+
+function routeGroupStateLabel(group: ModelGroup | undefined) {
+  if (!group) return "";
+  return group.enabled ? "" : "未启用";
 }
 
 function targetKey(type: "model" | "group", id: string) {

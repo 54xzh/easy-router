@@ -559,11 +559,20 @@ select {
   flex: 0 0 auto;
 }
 
+.flow-state-label {
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .flow-member-list {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.flow-member-row-dimmed {
+  opacity: 0.52;
 }
 
 .flow-node .code {
