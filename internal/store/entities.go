@@ -124,17 +124,17 @@ func (s *Store) GetModel(id string) (Model, error) {
 	var m Model
 	var providerEnabled bool
 	err := s.db.QueryRow(`SELECT m.internal_id, m.provider_id, m.original_id, m.display_name, m.supports_chat, m.supports_responses, m.supports_stream, m.context_length,
-		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, p.enabled
+		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count, p.enabled
 		FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.internal_id = ?`, id).
 		Scan(&m.InternalID, &m.ProviderID, &m.OriginalID, &m.DisplayName, &m.SupportsChat, &m.SupportsResponses, &m.SupportsStream, &m.ContextLength,
-			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &providerEnabled)
+			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount, &providerEnabled)
 	m.ProviderEnabled = providerEnabled
 	return m, err
 }
 
 func (s *Store) ListModels() ([]Model, error) {
 	rows, err := s.db.Query(`SELECT m.internal_id, m.provider_id, m.original_id, m.display_name, m.supports_chat, m.supports_responses, m.supports_stream, m.context_length,
-		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, p.enabled
+		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count, p.enabled
 		FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.provider_id, m.original_id`)
 	if err != nil {
 		return nil, err
@@ -144,7 +144,7 @@ func (s *Store) ListModels() ([]Model, error) {
 	for rows.Next() {
 		var m Model
 		if err := rows.Scan(&m.InternalID, &m.ProviderID, &m.OriginalID, &m.DisplayName, &m.SupportsChat, &m.SupportsResponses, &m.SupportsStream, &m.ContextLength,
-			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.ProviderEnabled); err != nil {
+			&m.Enabled, &m.AutoDisabled, &m.AutoDisabledReason, &m.FailCount, &m.WindowStart, &m.LastFailureAt, &m.CooldownUntil, &m.CooldownCount, &m.ProviderEnabled); err != nil {
 			return nil, err
 		}
 		models = append(models, m)
@@ -153,21 +153,22 @@ func (s *Store) ListModels() ([]Model, error) {
 }
 
 func (s *Store) RestoreModel(id string) error {
-	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', updated_at = ? WHERE internal_id = ?`, nowString(), id)
+	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, updated_at = ? WHERE internal_id = ?`, nowString(), id)
 	return err
 }
 
 func (s *Store) RecordModelFailure(modelID, reason string) error {
 	now := timeNow()
 	var failCount int
-	var windowStart string
-	err := s.db.QueryRow(`SELECT fail_count, window_start FROM models WHERE internal_id = ?`, modelID).Scan(&failCount, &windowStart)
+	var cooldownCount int
+	var windowStart, cooldownUntil string
+	err := s.db.QueryRow(`SELECT fail_count, window_start, cooldown_until, cooldown_count FROM models WHERE internal_id = ?`, modelID).Scan(&failCount, &windowStart, &cooldownUntil, &cooldownCount)
 	if err != nil {
 		return err
 	}
 	reset := true
 	if windowStart != "" {
-		if started, err := parseTime(windowStart); err == nil && now.Sub(started) <= 10*time.Minute {
+		if started, err := parseTime(windowStart); err == nil && now.Sub(started) <= modelFailureWindow {
 			reset = false
 		}
 	}
@@ -176,18 +177,29 @@ func (s *Store) RecordModelFailure(modelID, reason string) error {
 		windowStart = now.Format(timeFormat)
 	}
 	failCount++
-	autoDisabled := failCount >= 5
+	autoDisabled := false
 	autoReason := ""
-	if autoDisabled {
-		autoReason = fmt.Sprintf("10 分钟内连续失败 %d 次。最后错误：%s", failCount, reason)
+	if failCount >= modelFailureThreshold {
+		cooldownCount++
+		failCount = 0
+		windowStart = ""
+		cooldownUntil = now.Add(modelCooldownDuration).Format(timeFormat)
+		if cooldownCount >= modelCooldownLimit {
+			autoDisabled = true
+			autoReason = fmt.Sprintf("连续冷却 %d 次后自动禁用。最后错误：%s", cooldownCount, reason)
+			cooldownUntil = ""
+		}
 	}
-	_, err = s.db.Exec(`UPDATE models SET fail_count = ?, window_start = ?, last_failure_at = ?, auto_disabled = ?, auto_disabled_reason = ?, updated_at = ? WHERE internal_id = ?`,
-		failCount, windowStart, now.Format(timeFormat), boolInt(autoDisabled), autoReason, now.Format(timeFormat), modelID)
+	if autoDisabled {
+		cooldownCount = modelCooldownLimit
+	}
+	_, err = s.db.Exec(`UPDATE models SET fail_count = ?, window_start = ?, last_failure_at = ?, auto_disabled = ?, auto_disabled_reason = ?, cooldown_until = ?, cooldown_count = ?, updated_at = ? WHERE internal_id = ?`,
+		failCount, windowStart, now.Format(timeFormat), boolInt(autoDisabled), autoReason, cooldownUntil, cooldownCount, now.Format(timeFormat), modelID)
 	return err
 }
 
 func (s *Store) RecordModelSuccess(modelID string) error {
-	_, err := s.db.Exec(`UPDATE models SET fail_count = 0, window_start = '', last_failure_at = '', updated_at = ? WHERE internal_id = ?`, nowString(), modelID)
+	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, updated_at = ? WHERE internal_id = ?`, nowString(), modelID)
 	return err
 }
 
@@ -671,7 +683,7 @@ func (s *Store) RawModelsForModelsEndpoint() ([]Model, error) {
 	}
 	filtered := make([]Model, 0, len(models))
 	for _, model := range models {
-		if model.Enabled && model.ProviderEnabled && (!autoDisableEnabled || !model.AutoDisabled) {
+		if model.Enabled && model.ProviderEnabled && (!autoDisableEnabled || (!model.AutoDisabled && !model.CoolingDown())) {
 			filtered = append(filtered, model)
 		}
 	}

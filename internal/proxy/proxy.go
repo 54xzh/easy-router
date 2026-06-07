@@ -424,7 +424,7 @@ func (h *Handler) orderGroupModels(group store.ModelGroup, models []store.Model)
 }
 
 func (h *Handler) maybeCandidate(model store.Model, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) (candidate, bool, error) {
-	if !model.Enabled || !model.ProviderEnabled || (autoDisableEnabled && model.AutoDisabled) {
+	if !model.Enabled || !model.ProviderEnabled || (autoDisableEnabled && (model.AutoDisabled || model.CoolingDown())) {
 		return candidate{}, false, nil
 	}
 	if streaming && !model.SupportsStream {

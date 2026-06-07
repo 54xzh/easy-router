@@ -210,9 +210,60 @@ func TestAutoDisableSettingOffDoesNotRecordFailure(t *testing.T) {
 	if updated.FailCount != 0 || updated.AutoDisabled {
 		t.Fatalf("auto disable off should not record failure: fail=%d disabled=%v", updated.FailCount, updated.AutoDisabled)
 	}
+	if updated.CooldownCount != 0 || updated.CooldownUntil != "" {
+		t.Fatalf("auto disable off should not record cooldown: count=%d until=%q", updated.CooldownCount, updated.CooldownUntil)
+	}
 }
 
-func TestAutoDisableSettingOffUsesPreviouslyAutoDisabledModel(t *testing.T) {
+func TestCooldownModelSkippedWhenAutoDisableEnabled(t *testing.T) {
+	coolingCalled := make(chan struct{}, 1)
+	coolingUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		coolingCalled <- struct{}{}
+		writeJSON(w, http.StatusOK, map[string]any{"id": "cooling", "choices": []any{}})
+	}))
+	defer coolingUpstream.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": "fast", "choices": []any{}})
+	}))
+	defer fast.Close()
+
+	s := newProxyTestStore(t)
+	cooling := addProxyTestModel(t, s, "p1", "first", coolingUpstream.URL)
+	second := addProxyTestModel(t, s, "p2", "second", fast.URL)
+	for i := 0; i < 5; i++ {
+		if err := s.RecordModelFailure(cooling.InternalID, "boom"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addProxyTestRoute(t, s, "coder-fast", cooling.InternalID, second.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-coolingCalled:
+		t.Fatal("cooling model should not be requested")
+	default:
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || len(logs[0].Attempts) != 1 {
+		t.Fatalf("expected one attempt, got logs=%d attempts=%d", len(logs), len(logs[0].Attempts))
+	}
+	if logs[0].Attempts[0].ModelID != second.InternalID {
+		t.Fatalf("cooldown should skip to second model: %#v", logs[0].Attempts[0])
+	}
+}
+
+func TestAutoDisableSettingOffUsesCoolingModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"id": "ok", "choices": []any{}})
 	}))
@@ -224,6 +275,13 @@ func TestAutoDisableSettingOffUsesPreviouslyAutoDisabledModel(t *testing.T) {
 		if err := s.RecordModelFailure(model.InternalID, "boom"); err != nil {
 			t.Fatal(err)
 		}
+	}
+	cooling, err := s.GetModel(model.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooling.CooldownCount != 1 || !cooling.CoolingDown() {
+		t.Fatalf("model should be cooling down before setting is disabled: %#v", cooling)
 	}
 	if err := s.SetSetting("auto_disable_models", "false"); err != nil {
 		t.Fatal(err)
@@ -238,6 +296,13 @@ func TestAutoDisableSettingOffUsesPreviouslyAutoDisabledModel(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	updated, err := s.GetModel(model.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AutoDisabled || updated.CooldownCount != 0 || updated.CooldownUntil != "" {
+		t.Fatalf("success should clear old auto-disable state: %#v", updated)
 	}
 }
 

@@ -46,6 +46,8 @@ type Model struct {
 	FailCount          int    `json:"fail_count"`
 	WindowStart        string `json:"window_start"`
 	LastFailureAt      string `json:"last_failure_at"`
+	CooldownUntil      string `json:"cooldown_until"`
+	CooldownCount      int    `json:"cooldown_count"`
 	ProviderEnabled    bool   `json:"provider_enabled,omitempty"`
 }
 
@@ -205,6 +207,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			fail_count INTEGER NOT NULL DEFAULT 0,
 			window_start TEXT NOT NULL DEFAULT '',
 			last_failure_at TEXT NOT NULL DEFAULT '',
+			cooldown_until TEXT NOT NULL DEFAULT '',
+			cooldown_count INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(provider_id, original_id),
@@ -298,6 +302,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureProxyKeyCipherColumn(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureModelCooldownColumns(ctx); err != nil {
+		return err
+	}
 	defaults := map[string]string{
 		"models_expose_raw":        "false",
 		"log_retention_days":       "30",
@@ -335,6 +342,41 @@ func (s *Store) ensureProxyKeyCipherColumn(ctx context.Context) error {
 	}
 	_, err = s.db.ExecContext(ctx, `ALTER TABLE proxy_keys ADD COLUMN key_cipher TEXT NOT NULL DEFAULT ''`)
 	return err
+}
+
+func (s *Store) ensureModelCooldownColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(models)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !columns["cooldown_until"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN cooldown_until TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !columns["cooldown_count"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN cooldown_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) EnsureAdminUser() (string, error) {
@@ -563,12 +605,27 @@ func nowString() string {
 
 const timeFormat = time.RFC3339
 
+const (
+	modelFailureWindow    = 10 * time.Minute
+	modelFailureThreshold = 5
+	modelCooldownDuration = time.Hour
+	modelCooldownLimit    = 3
+)
+
 func timeNow() time.Time {
 	return time.Now().UTC()
 }
 
 func parseTime(value string) (time.Time, error) {
 	return time.Parse(timeFormat, value)
+}
+
+func (m Model) CoolingDown() bool {
+	if m.CooldownUntil == "" {
+		return false
+	}
+	until, err := parseTime(m.CooldownUntil)
+	return err == nil && timeNow().Before(until)
 }
 
 func boolInt(value bool) int {

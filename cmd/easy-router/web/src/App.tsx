@@ -622,27 +622,32 @@ function ProviderModels({
           </tr>
         </thead>
         <tbody>
-          {models.map((model) => (
-            <tr key={model.internal_id}>
-              <td>{model.internal_id}</td>
-              <td>
-                <div className="row">
-                  {model.supports_chat ? <span className="badge badge-success">Chat</span> : null}
-                  {model.supports_responses ? <span className="badge">Responses</span> : null}
-                  {model.supports_stream ? <span className="badge">流式</span> : null}
-                </div>
-              </td>
-              <td>
-                {autoDisableEnabled && model.auto_disabled ? (
-                  <span className="badge badge-danger">自动禁用</span>
-                ) : model.enabled ? (
-                  <Status ok text="启用" />
-                ) : (
-                  <Status text="禁用" />
-                )}
-              </td>
-            </tr>
-          ))}
+          {models.map((model) => {
+            const cooldownText = autoDisableEnabled ? modelCooldownLabel(model) : "";
+            return (
+              <tr key={model.internal_id}>
+                <td>{model.internal_id}</td>
+                <td>
+                  <div className="row">
+                    {model.supports_chat ? <span className="badge badge-success">Chat</span> : null}
+                    {model.supports_responses ? <span className="badge">Responses</span> : null}
+                    {model.supports_stream ? <span className="badge">流式</span> : null}
+                  </div>
+                </td>
+                <td>
+                  {autoDisableEnabled && model.auto_disabled ? (
+                    <span className="badge badge-danger">自动禁用</span>
+                  ) : cooldownText ? (
+                    <span className="badge badge-warning">{cooldownText}</span>
+                  ) : model.enabled ? (
+                    <Status ok text="启用" />
+                  ) : (
+                    <Status text="禁用" />
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -673,6 +678,8 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
         <tbody>
           {data.models.map((model) => {
             const autoDisabledActive = autoDisableOn && model.auto_disabled;
+            const cooldownText = autoDisableOn ? modelCooldownLabel(model) : "";
+            const hasAutoState = modelHasAutoState(model);
             return (
               <tr key={model.internal_id}>
                 <td>{model.internal_id}</td>
@@ -708,8 +715,10 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       onChange={(value) => updateModel(model, { enabled: value })}
                     />
                     {autoDisabledActive ? (
-                      <span className="badge badge-danger">{model.auto_disabled_reason}</span>
-                    ) : model.auto_disabled ? (
+                      <span className="badge badge-danger">自动禁用</span>
+                    ) : cooldownText ? (
+                      <span className="badge badge-warning">{cooldownText}</span>
+                    ) : !autoDisableOn && hasAutoState ? (
                       <span className="badge badge-warning">自动禁用已关闭</span>
                     ) : (
                       <Status ok text="正常" />
@@ -717,7 +726,7 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                   </div>
                 </td>
                 <td>
-                  {model.auto_disabled ? (
+                  {hasAutoState ? (
                     <Button
                       size="sm"
                       variant="secondary"
@@ -726,7 +735,7 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       }
                     >
                       <RotateCcw size={14} />
-                      恢复
+                      {model.auto_disabled ? "恢复" : "清除"}
                     </Button>
                   ) : null}
                 </td>
@@ -1971,6 +1980,31 @@ function routeStepName(data: AppData, step: RouteStepForm) {
 
 function autoDisableEnabled(settings: Settings) {
   return settings.auto_disable_models !== "false";
+}
+
+const modelCooldownLimit = 3;
+
+function modelCooldownLabel(model: Model) {
+  const count = model.cooldown_count ?? 0;
+  if (count <= 0) return "";
+  const label = `冷却 ${Math.min(count, modelCooldownLimit)}/${modelCooldownLimit}`;
+  if (!modelCoolingDown(model)) return label;
+  return `${label} · ${modelCooldownRemaining(model)}`;
+}
+
+function modelCoolingDown(model: Model) {
+  const until = Date.parse(model.cooldown_until || "");
+  return Number.isFinite(until) && until > Date.now();
+}
+
+function modelCooldownRemaining(model: Model) {
+  const until = Date.parse(model.cooldown_until || "");
+  const minutes = Math.max(1, Math.ceil((until - Date.now()) / 60000));
+  return `${minutes}m`;
+}
+
+function modelHasAutoState(model: Model) {
+  return model.auto_disabled || (model.cooldown_count ?? 0) > 0 || Boolean(model.cooldown_until);
 }
 
 function replaceItem<T>(items: T[], index: number, item: T) {

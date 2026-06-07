@@ -21,6 +21,11 @@ export type Model = {
   enabled: boolean;
   auto_disabled: boolean;
   auto_disabled_reason: string;
+  fail_count: number;
+  window_start: string;
+  last_failure_at: string;
+  cooldown_until: string;
+  cooldown_count: number;
   provider_enabled?: boolean;
 };
 
