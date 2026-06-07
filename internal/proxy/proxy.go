@@ -538,6 +538,7 @@ func convertResponsesToChat(input map[string]any) (map[string]any, error) {
 		"temperature": true, "top_p": true, "max_output_tokens": true, "max_tokens": true,
 		"stop": true, "user": true, "metadata": true, "presence_penalty": true, "frequency_penalty": true,
 		"tools": true, "tool_choice": true, "parallel_tool_calls": true,
+		"reasoning": true,
 	}
 	for key := range input {
 		if !allowed[key] {
@@ -571,6 +572,11 @@ func convertResponsesToChat(input map[string]any) (map[string]any, error) {
 	}
 	if value, ok := input["parallel_tool_calls"]; ok {
 		out["parallel_tool_calls"] = value
+	}
+	if reasoning, ok := input["reasoning"]; ok {
+		if effort, ok := reasoningEffort(reasoning); ok {
+			out["reasoning_effort"] = effort
+		}
 	}
 	messages := []map[string]any{}
 	if instructions, ok := input["instructions"].(string); ok && instructions != "" {
@@ -642,6 +648,7 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 		"temperature": true, "top_p": true, "max_completion_tokens": true, "max_tokens": true,
 		"stop": true, "user": true, "metadata": true, "presence_penalty": true, "frequency_penalty": true,
 		"tools": true, "tool_choice": true, "parallel_tool_calls": true,
+		"reasoning_effort": true, "reasoning": true,
 	}
 	for key := range input {
 		if !allowed[key] {
@@ -676,6 +683,11 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 	if value, ok := input["parallel_tool_calls"]; ok {
 		out["parallel_tool_calls"] = value
 	}
+	if value, ok := input["reasoning"]; ok {
+		out["reasoning"] = value
+	} else if value, ok := input["reasoning_effort"]; ok {
+		out["reasoning"] = map[string]any{"effort": value}
+	}
 	if value, ok := input["stream_options"]; ok {
 		if err := validateChatStreamOptions(value); err != nil {
 			return nil, err
@@ -697,7 +709,8 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 			return nil, errors.New("Chat Completions messages 只支持简单 message 数组")
 		}
 		for key := range message {
-			if key != "role" && key != "content" && key != "tool_calls" && key != "tool_call_id" && key != "name" {
+			if key != "role" && key != "content" && key != "tool_calls" && key != "tool_call_id" && key != "name" &&
+				key != "reasoning_content" && key != "reasoning" && key != "refusal" && key != "annotations" {
 				return nil, fmt.Errorf("当前上游不支持 Chat Completions message 字段 %q，且无法安全转换", key)
 			}
 		}
@@ -723,6 +736,8 @@ func convertChatToResponses(input map[string]any) (map[string]any, error) {
 				if !emptyContent(content) {
 					messages = append(messages, map[string]any{"role": role, "content": content})
 				}
+			} else if refusal, ok := message["refusal"].(string); ok && refusal != "" {
+				messages = append(messages, map[string]any{"role": role, "content": refusal})
 			}
 			if role == "assistant" {
 				toolCalls, err := chatMessageToolCallsToResponses(message["tool_calls"])
@@ -776,6 +791,16 @@ func chatStreamIncludeUsage(payload map[string]any) bool {
 	options, _ := payload["stream_options"].(map[string]any)
 	includeUsage, _ := options["include_usage"].(bool)
 	return includeUsage
+}
+
+func reasoningEffort(value any) (any, bool) {
+	switch reasoning := value.(type) {
+	case map[string]any:
+		effort, ok := reasoning["effort"]
+		return effort, ok
+	default:
+		return nil, false
+	}
 }
 
 func responsesToolsToChat(value any) ([]map[string]any, error) {
@@ -1280,6 +1305,17 @@ func chatChoiceToResponsesOutput(choice map[string]any, status string) ([]any, s
 			}},
 		})
 	}
+	if reasoningText := chatReasoningContent(message); reasoningText != "" {
+		output = append([]any{map[string]any{
+			"type":   "reasoning",
+			"id":     "rs_0",
+			"status": status,
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": reasoningText,
+			}},
+		}}, output...)
+	}
 	toolCalls, err := chatMessageToolCallsToResponses(message["tool_calls"])
 	if err != nil {
 		return nil, "", err
@@ -1318,8 +1354,23 @@ func chatMessageContent(message map[string]any) (string, error) {
 	return "", nil
 }
 
+func chatReasoningContent(message map[string]any) string {
+	if text, ok := message["reasoning_content"].(string); ok {
+		return text
+	}
+	switch reasoning := message["reasoning"].(type) {
+	case string:
+		return reasoning
+	case map[string]any:
+		return firstString(reasoning, "content", "text", "summary")
+	default:
+		return ""
+	}
+}
+
 func responsesOutputToChatMessage(root map[string]any) (map[string]any, string, error) {
 	content := responsesOutputText(root)
+	reasoningContent := responsesReasoningContent(root)
 	toolCalls := []map[string]any{}
 	output, _ := root["output"].([]any)
 	for i, item := range output {
@@ -1338,6 +1389,9 @@ func responsesOutputToChatMessage(root map[string]any) (map[string]any, string, 
 		"role":    "assistant",
 		"content": content,
 	}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
 	finishReason := finishReasonFromResponseStatus(root["status"])
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
@@ -1347,6 +1401,29 @@ func responsesOutputToChatMessage(root map[string]any) (map[string]any, string, 
 		}
 	}
 	return message, finishReason, nil
+}
+
+func responsesReasoningContent(root map[string]any) string {
+	parts := []string{}
+	output, _ := root["output"].([]any)
+	for _, item := range output {
+		obj, _ := item.(map[string]any)
+		itemType, _ := obj["type"].(string)
+		if itemType != "reasoning" {
+			continue
+		}
+		if text := firstString(obj, "text", "content"); text != "" {
+			parts = append(parts, text)
+		}
+		summaryItems, _ := obj["summary"].([]any)
+		for _, rawSummary := range summaryItems {
+			summary, _ := rawSummary.(map[string]any)
+			if text := firstString(summary, "text", "summary_text"); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func responsesOutputText(root map[string]any) string {
@@ -1584,6 +1661,18 @@ func streamChatToResponses(w http.ResponseWriter, body io.Reader, model string) 
 		for _, rawChoice := range choices {
 			choice, _ := rawChoice.(map[string]any)
 			delta, _ := choice["delta"].(map[string]any)
+			if text := chatReasoningDelta(delta); text != "" {
+				if err := writeSSE(w, "response.reasoning_summary_text.delta", map[string]any{
+					"type":          "response.reasoning_summary_text.delta",
+					"response_id":   responseID,
+					"item_id":       "rs_0",
+					"output_index":  0,
+					"summary_index": 0,
+					"delta":         text,
+				}); err != nil {
+					return err
+				}
+			}
 			if text, ok := delta["content"].(string); ok && text != "" {
 				if err := writeSSE(w, "response.output_text.delta", map[string]any{
 					"type":          "response.output_text.delta",
@@ -1674,6 +1763,16 @@ func streamChatToResponses(w http.ResponseWriter, body io.Reader, model string) 
 	})
 }
 
+func chatReasoningDelta(delta map[string]any) string {
+	if text, ok := delta["reasoning_content"].(string); ok {
+		return text
+	}
+	if text, ok := delta["reasoning"].(string); ok {
+		return text
+	}
+	return ""
+}
+
 type streamToolCallState struct {
 	Index     int
 	ItemID    string
@@ -1750,6 +1849,20 @@ func streamResponsesToChat(w http.ResponseWriter, body io.Reader, model string, 
 			}
 			if text != "" {
 				delta["content"] = text
+			}
+			if len(delta) > 0 {
+				return writeChatChunk(w, chatID, created, model, delta, nil)
+			}
+		}
+		if eventType == "response.reasoning_summary_text.delta" || eventType == "response.reasoning_text.delta" {
+			text, _ := chunk["delta"].(string)
+			delta := map[string]any{}
+			if !roleSent {
+				roleSent = true
+				delta["role"] = "assistant"
+			}
+			if text != "" {
+				delta["reasoning_content"] = text
 			}
 			if len(delta) > 0 {
 				return writeChatChunk(w, chatID, created, model, delta, nil)

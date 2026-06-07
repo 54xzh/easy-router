@@ -141,7 +141,8 @@ func TestConvertChatRejectsUnknownFields(t *testing.T) {
 
 func TestConvertChatToResponsesWithToolsAndImage(t *testing.T) {
 	got, err := convertChatToResponses(map[string]any{
-		"model": "gpt-4o",
+		"model":            "gpt-4o",
+		"reasoning_effort": "medium",
 		"tools": []any{map[string]any{
 			"type": "function",
 			"function": map[string]any{
@@ -159,6 +160,7 @@ func TestConvertChatToResponsesWithToolsAndImage(t *testing.T) {
 					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,abc", "detail": "low"}},
 				},
 			},
+			map[string]any{"role": "assistant", "content": "previous answer", "reasoning_content": "private reasoning"},
 			map[string]any{
 				"role":    "assistant",
 				"content": nil,
@@ -185,15 +187,21 @@ func TestConvertChatToResponsesWithToolsAndImage(t *testing.T) {
 	if choice["name"] != "lookup" {
 		t.Fatalf("unexpected tool_choice: %#v", choice)
 	}
+	if got["reasoning"].(map[string]any)["effort"] != "medium" {
+		t.Fatalf("reasoning_effort was not mapped: %#v", got["reasoning"])
+	}
 	input, ok := got["input"].([]map[string]any)
-	if !ok || len(input) != 3 {
+	if !ok || len(input) != 4 {
 		t.Fatalf("unexpected input: %#v", got["input"])
 	}
 	content, ok := input[0]["content"].([]map[string]any)
 	if !ok || content[1]["type"] != "input_image" {
 		t.Fatalf("image was not converted: %#v", input[0]["content"])
 	}
-	if input[1]["type"] != "function_call" || input[2]["type"] != "function_call_output" {
+	if input[1]["role"] != "assistant" || input[1]["content"] != "previous answer" {
+		t.Fatalf("reasoning_content should not break assistant history conversion: %#v", input)
+	}
+	if input[2]["type"] != "function_call" || input[3]["type"] != "function_call_output" {
 		t.Fatalf("tool call history was not converted: %#v", input)
 	}
 }
@@ -270,6 +278,59 @@ func TestChatRequestUsesResponsesOnlyModel(t *testing.T) {
 	message, _ := choices[0].(map[string]any)["message"].(map[string]any)
 	if message["content"] != "pong" {
 		t.Fatalf("unexpected converted content: %#v", response)
+	}
+}
+
+func TestChatRequestWithReasoningContentUsesResponsesOnlyModel(t *testing.T) {
+	var upstreamPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":         "resp_1",
+			"created_at": float64(123),
+			"model":      "upstream-responses",
+			"output": []any{map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []any{map[string]any{
+					"type": "output_text",
+					"text": "ok",
+				}},
+			}},
+		})
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	model := addProxyTestModel(t, s, "p1", "upstream-responses", upstream.URL)
+	model = setProxyTestModelSupport(t, s, model, false, true)
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"coder-fast",
+		"messages":[
+			{"role":"user","content":"first"},
+			{"role":"assistant","content":"answer","reasoning_content":"thinking"},
+			{"role":"user","content":"continue"}
+		]
+	}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	input, ok := upstreamPayload["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("unexpected upstream input: %#v", upstreamPayload["input"])
+	}
+	assistant := input[1].(map[string]any)
+	if assistant["role"] != "assistant" || assistant["content"] != "answer" {
+		t.Fatalf("assistant message was not preserved: %#v", assistant)
 	}
 }
 
@@ -425,6 +486,36 @@ func TestConvertChatToolCallResponseToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertChatReasoningResponseToResponses(t *testing.T) {
+	got, err := convertChatResponseToResponses([]byte(`{
+		"id":"chatcmpl_1",
+		"created":123,
+		"model":"upstream-chat",
+		"choices":[{
+			"message":{
+				"role":"assistant",
+				"reasoning_content":"thinking",
+				"content":"answer"
+			},
+			"finish_reason":"stop"
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatal(err)
+	}
+	output := response["output"].([]any)
+	if output[0].(map[string]any)["type"] != "reasoning" {
+		t.Fatalf("reasoning output was not preserved: %#v", output)
+	}
+	if response["output_text"] != "answer" {
+		t.Fatalf("answer text was not preserved: %#v", response)
+	}
+}
+
 func TestConvertResponsesToolCallResponseToChat(t *testing.T) {
 	got, err := convertResponsesResponseToChat([]byte(`{
 		"id":"resp_1",
@@ -455,6 +546,29 @@ func TestConvertResponsesToolCallResponseToChat(t *testing.T) {
 	call := toolCalls[0].(map[string]any)
 	if call["id"] != "call_1" || call["function"].(map[string]any)["name"] != "lookup" {
 		t.Fatalf("unexpected tool_calls: %#v", message)
+	}
+}
+
+func TestConvertResponsesReasoningResponseToChat(t *testing.T) {
+	got, err := convertResponsesResponseToChat([]byte(`{
+		"id":"resp_1",
+		"created_at":123,
+		"model":"upstream-responses",
+		"output":[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatal(err)
+	}
+	message := response["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["reasoning_content"] != "thinking" || message["content"] != "answer" {
+		t.Fatalf("reasoning/content was not converted: %#v", message)
 	}
 }
 
@@ -519,6 +633,50 @@ data: [DONE]
 	}
 	if !strings.Contains(out, "response.completed") {
 		t.Fatalf("responses stream did not finish: %s", out)
+	}
+}
+
+func TestStreamResponsesToChatConvertsReasoningDelta(t *testing.T) {
+	body := strings.NewReader(`event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","response_id":"resp_1","delta":"thinking"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","response_id":"resp_1","delta":"answer"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"upstream-responses"}}
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamResponsesToChat(w, body, "upstream-responses", false); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, `"reasoning_content":"thinking"`) || !strings.Contains(out, `"content":"answer"`) {
+		t.Fatalf("reasoning stream was not converted: %s", out)
+	}
+}
+
+func TestStreamChatToResponsesConvertsReasoningDelta(t *testing.T) {
+	body := strings.NewReader(`data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_1","created":123,"model":"upstream-chat","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+
+	if err := streamChatToResponses(w, body, "upstream-chat"); err != nil {
+		t.Fatal(err)
+	}
+	out := w.Body.String()
+	if !strings.Contains(out, "response.reasoning_summary_text.delta") || !strings.Contains(out, `"delta":"thinking"`) {
+		t.Fatalf("reasoning stream was not converted: %s", out)
+	}
+	if !strings.Contains(out, "response.output_text.delta") || !strings.Contains(out, `"delta":"answer"`) {
+		t.Fatalf("answer stream was not converted: %s", out)
 	}
 }
 
