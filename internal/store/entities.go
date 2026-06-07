@@ -661,13 +661,17 @@ func (s *Store) RawModelsForModelsEndpoint() ([]Model, error) {
 	if value != "true" {
 		return nil, nil
 	}
+	autoDisableEnabled, err := s.AutoDisableModelsEnabled()
+	if err != nil {
+		return nil, err
+	}
 	models, err := s.ListModels()
 	if err != nil {
 		return nil, err
 	}
 	filtered := make([]Model, 0, len(models))
 	for _, model := range models {
-		if model.Enabled && model.ProviderEnabled && !model.AutoDisabled {
+		if model.Enabled && model.ProviderEnabled && (!autoDisableEnabled || !model.AutoDisabled) {
 			filtered = append(filtered, model)
 		}
 	}

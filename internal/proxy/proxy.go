@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ type Handler struct {
 	store  *store.Store
 	client *http.Client
 }
+
+const statusClientClosedRequest = 499
 
 type candidate struct {
 	Provider     store.Provider
@@ -125,7 +128,26 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		Status:      "error",
 	}
 
-	candidates, routeID, err := h.resolveCandidates(clientModel, payload, api, streaming)
+	autoDisableEnabled, err := h.store.AutoDisableModelsEnabled()
+	if err != nil {
+		requestLog.HTTPStatus = http.StatusInternalServerError
+		requestLog.DurationMS = time.Since(start).Milliseconds()
+		requestLog.Error = err.Error()
+		_ = h.store.AddRequestLog(requestLog)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	upstreamTimeout, err := h.store.UpstreamTimeout()
+	if err != nil {
+		requestLog.HTTPStatus = http.StatusBadRequest
+		requestLog.DurationMS = time.Since(start).Milliseconds()
+		requestLog.Error = err.Error()
+		_ = h.store.AddRequestLog(requestLog)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	candidates, routeID, err := h.resolveCandidates(clientModel, payload, api, streaming, autoDisableEnabled)
 	requestLog.RouteID = routeID
 	if err != nil {
 		status := http.StatusBadRequest
@@ -141,8 +163,18 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 	}
 
 	for idx, item := range candidates {
+		if requestCanceled(r.Context()) {
+			requestLog.Status = "canceled"
+			requestLog.Attempts = attempts
+			requestLog.HTTPStatus = statusClientClosedRequest
+			requestLog.DurationMS = time.Since(start).Milliseconds()
+			requestLog.Error = r.Context().Err().Error()
+			_ = h.store.AddRequestLog(requestLog)
+			writeJSON(w, statusClientClosedRequest, map[string]any{"error": requestLog.Error})
+			return
+		}
 		attemptStart := time.Now()
-		statusCode, responseBody, responseHeaders, copyErr, fallback, err := h.callUpstream(w, r, item, streaming)
+		statusCode, responseBody, responseHeaders, copyErr, fallback, err := h.callUpstream(w, r, item, streaming, upstreamTimeout)
 		duration := time.Since(attemptStart).Milliseconds()
 		attempt := store.AttemptLog{
 			Position:   idx + 1,
@@ -153,10 +185,27 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		}
 
 		if err != nil {
+			if requestCanceled(r.Context()) {
+				attempt.Status = "canceled"
+				attempt.HTTPStatus = statusClientClosedRequest
+				attempt.Error = err.Error()
+				attempts = append(attempts, attempt)
+				requestLog.Status = "canceled"
+				requestLog.Attempts = attempts
+				requestLog.FinalModel = item.Model.InternalID
+				requestLog.HTTPStatus = statusClientClosedRequest
+				requestLog.DurationMS = time.Since(start).Milliseconds()
+				requestLog.Error = err.Error()
+				_ = h.store.AddRequestLog(requestLog)
+				writeJSON(w, statusClientClosedRequest, map[string]any{"error": err.Error()})
+				return
+			}
 			attempt.Status = "failed"
 			attempt.Error = err.Error()
 			attempts = append(attempts, attempt)
-			_ = h.store.RecordModelFailure(item.Model.InternalID, err.Error())
+			if autoDisableEnabled {
+				_ = h.store.RecordModelFailure(item.Model.InternalID, err.Error())
+			}
 			if fallback {
 				continue
 			}
@@ -207,9 +256,15 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 	writeJSON(w, http.StatusBadGateway, map[string]any{"error": requestLog.Error})
 }
 
-func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item candidate, streaming bool) (int, []byte, http.Header, error, bool, error) {
+func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item candidate, streaming bool, upstreamTimeout time.Duration) (int, []byte, http.Header, error, bool, error) {
 	endpoint := joinEndpoint(item.Provider.BaseURL, item.Endpoint)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(item.RequestBody))
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if !streaming && upstreamTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, upstreamTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(item.RequestBody))
 	if err != nil {
 		return http.StatusBadGateway, nil, nil, nil, true, err
 	}
@@ -224,6 +279,9 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 
 	resp, err := h.client.Do(req)
 	if err != nil {
+		if requestTimedOut(ctx, r.Context()) {
+			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout)
+		}
 		return http.StatusBadGateway, nil, nil, nil, true, err
 	}
 	defer resp.Body.Close()
@@ -244,35 +302,38 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if requestTimedOut(ctx, r.Context()) {
+			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout)
+		}
 		return http.StatusBadGateway, nil, nil, nil, true, err
 	}
 	return resp.StatusCode, payload, resp.Header.Clone(), nil, false, nil
 }
 
-func (h *Handler) resolveCandidates(clientModel string, payload map[string]any, api string, streaming bool) ([]candidate, string, error) {
+func (h *Handler) resolveCandidates(clientModel string, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, string, error) {
 	if route, err := h.store.GetRoute(clientModel); err == nil {
 		if !route.Enabled {
 			return nil, route.ID, errors.New("路由模型已禁用")
 		}
-		items, err := h.routeCandidates(route, payload, api, streaming)
+		items, err := h.routeCandidates(route, payload, api, streaming, autoDisableEnabled)
 		return items, route.ID, err
 	}
 
-	raw, err := h.rawCandidate(clientModel, payload, api, streaming)
+	raw, err := h.rawCandidate(clientModel, payload, api, streaming, autoDisableEnabled)
 	if err != nil {
 		return nil, clientModel, err
 	}
 	return []candidate{raw}, clientModel, nil
 }
 
-func (h *Handler) rawCandidate(modelID string, payload map[string]any, api string, streaming bool) (candidate, error) {
+func (h *Handler) rawCandidate(modelID string, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) (candidate, error) {
 	rawModels, err := h.store.RawModelsForModelsEndpoint()
 	if err != nil {
 		return candidate{}, err
 	}
 	for _, model := range rawModels {
 		if model.InternalID == modelID {
-			item, ok, err := h.buildCandidate(model, payload, api, streaming)
+			item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled)
 			if err != nil {
 				return candidate{}, err
 			}
@@ -285,7 +346,7 @@ func (h *Handler) rawCandidate(modelID string, payload map[string]any, api strin
 	return candidate{}, errRouteNotFound
 }
 
-func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api string, streaming bool) ([]candidate, error) {
+func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, error) {
 	overrides := map[string]bool{}
 	for _, override := range route.Overrides {
 		overrides[override.TargetType+"|"+override.TargetID] = override.Disabled
@@ -301,7 +362,7 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			}
 			model, err := h.store.GetModel(step.TargetID)
 			if err == nil {
-				if item, ok, err := h.maybeCandidate(model, payload, api, streaming); err != nil {
+				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
 					return nil, err
 				} else if ok {
 					out = append(out, item)
@@ -326,7 +387,7 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			}
 			models = h.orderGroupModels(group, models)
 			for _, model := range models {
-				if item, ok, err := h.maybeCandidate(model, payload, api, streaming); err != nil {
+				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
 					return nil, err
 				} else if ok {
 					out = append(out, item)
@@ -359,8 +420,8 @@ func (h *Handler) orderGroupModels(group store.ModelGroup, models []store.Model)
 	return ordered
 }
 
-func (h *Handler) maybeCandidate(model store.Model, payload map[string]any, api string, streaming bool) (candidate, bool, error) {
-	if !model.Enabled || model.AutoDisabled || !model.ProviderEnabled {
+func (h *Handler) maybeCandidate(model store.Model, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) (candidate, bool, error) {
+	if !model.Enabled || !model.ProviderEnabled || (autoDisableEnabled && model.AutoDisabled) {
 		return candidate{}, false, nil
 	}
 	if streaming && !model.SupportsStream {
@@ -551,6 +612,14 @@ func isFallbackable(status int, endpoint string) bool {
 		return true
 	}
 	return endpoint == "/responses" && status == http.StatusNotFound
+}
+
+func requestCanceled(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+func requestTimedOut(ctx, parent context.Context) bool {
+	return parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 func cloneMap(input map[string]any) map[string]any {

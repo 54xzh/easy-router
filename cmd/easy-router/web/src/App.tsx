@@ -303,6 +303,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
   const [remoteModels, setRemoteModels] = useState<Record<string, RemoteModel[]>>({});
   const [selectedRemote, setSelectedRemote] = useState<Record<string, string[]>>({});
   const [manualModel, setManualModel] = useState<Record<string, string>>({});
+  const autoDisableOn = autoDisableEnabled(data.settings);
 
   const modelsByProvider = useMemo(() => {
     const map = new Map<string, Model[]>();
@@ -466,7 +467,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                     </div>
                   </div>
 
-                  <ProviderModels models={providerModels} />
+                  <ProviderModels models={providerModels} autoDisableEnabled={autoDisableOn} />
 
                   {discovered.length > 0 ? (
                     <div className="model-pick-list">
@@ -600,7 +601,13 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
   );
 }
 
-function ProviderModels({ models }: { models: Model[] }) {
+function ProviderModels({
+  models,
+  autoDisableEnabled,
+}: {
+  models: Model[];
+  autoDisableEnabled: boolean;
+}) {
   if (models.length === 0) {
     return <div className="empty-state">暂无模型</div>;
   }
@@ -626,7 +633,7 @@ function ProviderModels({ models }: { models: Model[] }) {
                 </div>
               </td>
               <td>
-                {model.auto_disabled ? (
+                {autoDisableEnabled && model.auto_disabled ? (
                   <span className="badge badge-danger">自动禁用</span>
                 ) : model.enabled ? (
                   <Status ok text="启用" />
@@ -643,6 +650,8 @@ function ProviderModels({ models }: { models: Model[] }) {
 }
 
 function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>) => void }) {
+  const autoDisableOn = autoDisableEnabled(data.settings);
+
   function updateModel(model: Model, patchData: Partial<Model>) {
     run(async () => {
       await patch(`/api/admin/models/${enc(model.internal_id)}`, { ...model, ...patchData });
@@ -662,63 +671,68 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
           </tr>
         </thead>
         <tbody>
-          {data.models.map((model) => (
-            <tr key={model.internal_id}>
-              <td>{model.internal_id}</td>
-              <td>
-                <div className="row">
-                  <LabeledSwitch
-                    compact
-                    label="Chat"
-                    selected={model.supports_chat}
-                    onChange={(value) => updateModel(model, { supports_chat: value })}
-                  />
-                  <LabeledSwitch
-                    compact
-                    label="Responses"
-                    selected={model.supports_responses}
-                    onChange={(value) => updateModel(model, { supports_responses: value })}
-                  />
-                  <LabeledSwitch
-                    compact
-                    label="流式"
-                    selected={model.supports_stream}
-                    onChange={(value) => updateModel(model, { supports_stream: value })}
-                  />
-                </div>
-              </td>
-              <td>{model.context_length || "-"}</td>
-              <td>
-                <div className="stack">
-                  <LabeledSwitch
-                    compact
-                    label={model.enabled ? "启用" : "禁用"}
-                    selected={model.enabled}
-                    onChange={(value) => updateModel(model, { enabled: value })}
-                  />
+          {data.models.map((model) => {
+            const autoDisabledActive = autoDisableOn && model.auto_disabled;
+            return (
+              <tr key={model.internal_id}>
+                <td>{model.internal_id}</td>
+                <td>
+                  <div className="row">
+                    <LabeledSwitch
+                      compact
+                      label="Chat"
+                      selected={model.supports_chat}
+                      onChange={(value) => updateModel(model, { supports_chat: value })}
+                    />
+                    <LabeledSwitch
+                      compact
+                      label="Responses"
+                      selected={model.supports_responses}
+                      onChange={(value) => updateModel(model, { supports_responses: value })}
+                    />
+                    <LabeledSwitch
+                      compact
+                      label="流式"
+                      selected={model.supports_stream}
+                      onChange={(value) => updateModel(model, { supports_stream: value })}
+                    />
+                  </div>
+                </td>
+                <td>{model.context_length || "-"}</td>
+                <td>
+                  <div className="stack">
+                    <LabeledSwitch
+                      compact
+                      label={model.enabled ? "启用" : "禁用"}
+                      selected={model.enabled}
+                      onChange={(value) => updateModel(model, { enabled: value })}
+                    />
+                    {autoDisabledActive ? (
+                      <span className="badge badge-danger">{model.auto_disabled_reason}</span>
+                    ) : model.auto_disabled ? (
+                      <span className="badge badge-warning">自动禁用已关闭</span>
+                    ) : (
+                      <Status ok text="正常" />
+                    )}
+                  </div>
+                </td>
+                <td>
                   {model.auto_disabled ? (
-                    <span className="badge badge-danger">{model.auto_disabled_reason}</span>
-                  ) : (
-                    <Status ok text="正常" />
-                  )}
-                </div>
-              </td>
-              <td>
-                {model.auto_disabled ? (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onPress={() =>
-                      run(async () => post(`/api/admin/models/${enc(model.internal_id)}/restore`))
-                    }
-                  >
-                    <RotateCcw size={14} />
-                    恢复
-                  </Button>
-                ) : null}
-              </td>
-            </tr>
-          ))}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onPress={() =>
+                        run(async () => post(`/api/admin/models/${enc(model.internal_id)}/restore`))
+                      }
+                    >
+                      <RotateCcw size={14} />
+                      恢复
+                    </Button>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -956,7 +970,8 @@ function Groups({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                                 <div className="config-index">{index + 1}</div>
                                 <div className="config-row-main">
                                   {member.model_id}
-                                  {model?.enabled === false || model?.auto_disabled ? (
+                                  {model?.enabled === false ||
+                                  (autoDisableEnabled(data.settings) && model?.auto_disabled) ? (
                                     <Status text="不可用" />
                                   ) : (
                                     <Status ok text="可用" />
@@ -1568,6 +1583,7 @@ function LogsView({ logs }: { logs: RequestLog[] }) {
 
 function SettingsView({ data, run }: { data: AppData; run: (task: () => Promise<void>) => void }) {
   const [retention, setRetention] = useState(data.settings.log_retention_days ?? "30");
+  const [upstreamTimeout, setUpstreamTimeout] = useState(data.settings.upstream_timeout_seconds ?? "20");
   const [keyName, setKeyName] = useState("默认客户端");
   const [copiedKey, setCopiedKey] = useState("");
   const [visibleTokens, setVisibleTokens] = useState<Record<string, string>>({});
@@ -1617,6 +1633,36 @@ function SettingsView({ data, run }: { data: AppData; run: (task: () => Promise<
 
   return (
     <div className="surface">
+      <div className="section stack">
+        <h2>故障切换</h2>
+        <LabeledSwitch
+          label="自动禁用失败模型"
+          selected={autoDisableEnabled(data.settings)}
+          onChange={(selected) =>
+            run(async () => {
+              await put("/api/admin/settings", { auto_disable_models: selected ? "true" : "false" });
+            })
+          }
+        />
+        <div className="row">
+          <TextField value={upstreamTimeout} onChange={setUpstreamTimeout}>
+            <Label>单模型超时秒数</Label>
+            <Input />
+          </TextField>
+          <Button
+            variant="secondary"
+            onPress={() =>
+              run(async () => {
+                await put("/api/admin/settings", { upstream_timeout_seconds: upstreamTimeout });
+              })
+            }
+          >
+            <Save size={16} />
+            保存
+          </Button>
+        </div>
+      </div>
+
       <div className="section stack">
         <h2>/v1/models</h2>
         <LabeledSwitch
@@ -1921,6 +1967,10 @@ function routeStepName(data: AppData, step: RouteStepForm) {
   return step.target_type === "group"
     ? groupName(data.groups, step.target_id)
     : modelName(data.models, step.target_id);
+}
+
+function autoDisableEnabled(settings: Settings) {
+  return settings.auto_disable_models !== "false";
 }
 
 function replaceItem<T>(items: T[], index: number, item: T) {

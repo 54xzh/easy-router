@@ -104,4 +104,6 @@ export type RequestLog = {
 export type Settings = {
   models_expose_raw?: string;
   log_retention_days?: string;
+  auto_disable_models?: string;
+  upstream_timeout_seconds?: string;
 };

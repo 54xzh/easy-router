@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,8 +299,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	defaults := map[string]string{
-		"models_expose_raw":  "false",
-		"log_retention_days": "30",
+		"models_expose_raw":        "false",
+		"log_retention_days":       "30",
+		"auto_disable_models":      "true",
+		"upstream_timeout_seconds": "20",
 	}
 	for key, value := range defaults {
 		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)`, key, value); err != nil {
@@ -431,6 +435,35 @@ func (s *Store) Settings() (map[string]string, error) {
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
+}
+
+func (s *Store) AutoDisableModelsEnabled() (bool, error) {
+	value, err := s.GetSetting("auto_disable_models")
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value != "false", nil
+}
+
+func (s *Store) UpstreamTimeout() (time.Duration, error) {
+	value, err := s.GetSetting("upstream_timeout_seconds")
+	if errors.Is(err, sql.ErrNoRows) || strings.TrimSpace(value) == "" {
+		return 20 * time.Second, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return 0, fmt.Errorf("upstream_timeout_seconds 必须是秒数")
+	}
+	if seconds <= 0 {
+		return 0, nil
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
 }
 
 func (s *Store) CreateProxyKey(name string) (ProxyKeyWithSecret, error) {
