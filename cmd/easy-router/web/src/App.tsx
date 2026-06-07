@@ -1471,7 +1471,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
                   {group?.members.map((member) => {
                     const modelOff = modelOverrideDisabled(member.model_id);
                     const model = member.model ?? data.models.find((item) => item.internal_id === member.model_id);
-                    const memberState = routeMemberStateLabel(member, model, autoDisableOn);
+                    const memberState = routeMemberStateLabel(member, model, data.providers, autoDisableOn);
                     const isMemberDimmed = !isGroupDimmed && (modelOff || Boolean(memberState));
                     return (
                       <div
@@ -1502,7 +1502,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       } else {
         const isRouteDisabled = stepDisabled(step);
         const model = data.models.find((item) => item.internal_id === step.target_id);
-        const modelState = routeModelStateLabel(model, autoDisableOn);
+        const modelState = routeModelStateLabel(model, data.providers, autoDisableOn);
         const isModelDimmed = isRouteDisabled || Boolean(modelState);
         nodes.push({
           id: `step-${index}`,
@@ -1540,7 +1540,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       });
     });
     return { nodes, edges };
-  }, [autoDisableOn, data.groups, data.models, run, selected]);
+  }, [autoDisableOn, data.groups, data.models, data.providers, run, selected]);
 
   if (!selected) {
     return <div className="surface section muted">暂无路由</div>;
@@ -1973,18 +1973,29 @@ function groupName(groups: ModelGroup[], id: string) {
   return group?.name || id;
 }
 
-function routeModelStateLabel(model: Model | undefined, autoDisableOn: boolean) {
+function routeModelStateLabel(model: Model | undefined, providers: Provider[], autoDisableOn: boolean) {
   if (!model) return "";
-  if (model.provider_enabled === false) return "提供商未启用";
+  if (!routeModelProviderEnabled(model, providers)) return "提供商未启用";
   if (!model.enabled) return "未启用";
   if (autoDisableOn && model.auto_disabled) return "已禁用";
   if (autoDisableOn && modelCoolingDown(model)) return "冷却中";
   return "";
 }
 
-function routeMemberStateLabel(member: ModelGroupMember, model: Model | undefined, autoDisableOn: boolean) {
+function routeMemberStateLabel(
+  member: ModelGroupMember,
+  model: Model | undefined,
+  providers: Provider[],
+  autoDisableOn: boolean,
+) {
   if (!member.enabled) return "未启用";
-  return routeModelStateLabel(model, autoDisableOn);
+  return routeModelStateLabel(model, providers, autoDisableOn);
+}
+
+function routeModelProviderEnabled(model: Model, providers: Provider[]) {
+  const provider = providers.find((item) => item.id === model.provider_id);
+  if (provider) return provider.enabled;
+  return model.provider_enabled !== false;
 }
 
 function routeGroupStateLabel(group: ModelGroup | undefined) {

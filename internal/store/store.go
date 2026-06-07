@@ -51,7 +51,7 @@ type Model struct {
 	UpstreamErrorStatus int    `json:"upstream_error_status"`
 	UpstreamErrorAt     string `json:"upstream_error_at"`
 	UpstreamError       string `json:"upstream_error"`
-	ProviderEnabled     bool   `json:"provider_enabled,omitempty"`
+	ProviderEnabled     bool   `json:"provider_enabled"`
 }
 
 type ModelGroup struct {

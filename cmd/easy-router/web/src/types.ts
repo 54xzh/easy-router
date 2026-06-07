@@ -29,7 +29,7 @@ export type Model = {
   upstream_error_status: number;
   upstream_error_at: string;
   upstream_error: string;
-  provider_enabled?: boolean;
+  provider_enabled: boolean;
 };
 
 export type ModelGroupMember = {
