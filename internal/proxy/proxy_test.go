@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +239,90 @@ func TestAutoDisableSettingOffUsesPreviouslyAutoDisabledModel(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestUpstreamReturned499FallsBackToNextModel(t *testing.T) {
+	canceledUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, statusClientClosedRequest, map[string]any{"error": "context canceled"})
+	}))
+	defer canceledUpstream.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": "fast", "choices": []any{}})
+	}))
+	defer fast.Close()
+
+	s := newProxyTestStore(t)
+	first := addProxyTestModel(t, s, "p1", "first", canceledUpstream.URL)
+	second := addProxyTestModel(t, s, "p2", "second", fast.URL)
+	addProxyTestRoute(t, s, "coder-fast", first.InternalID, second.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || len(logs[0].Attempts) != 2 {
+		t.Fatalf("expected fallback after upstream 499, got logs=%d attempts=%d", len(logs), len(logs[0].Attempts))
+	}
+	if logs[0].Attempts[0].HTTPStatus != statusClientClosedRequest || logs[0].Attempts[0].Status != "failed" {
+		t.Fatalf("unexpected first attempt: %#v", logs[0].Attempts[0])
+	}
+}
+
+func TestUpstreamTransportContextCanceledFallsBackToNextModel(t *testing.T) {
+	s := newProxyTestStore(t)
+	first := addProxyTestModel(t, s, "p1", "first", "https://first.test")
+	second := addProxyTestModel(t, s, "p2", "second", "https://second.test")
+	addProxyTestRoute(t, s, "coder-fast", first.InternalID, second.InternalID)
+
+	h := &Handler{
+		store: s,
+		client: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host == "first.test" {
+					return nil, context.Canceled
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"id":"fast","choices":[]}`)),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || len(logs[0].Attempts) != 2 {
+		t.Fatalf("expected fallback after upstream transport cancel, got logs=%d attempts=%d", len(logs), len(logs[0].Attempts))
+	}
+	if !strings.Contains(logs[0].Attempts[0].Error, "上游连接取消") {
+		t.Fatalf("unexpected first attempt error: %s", logs[0].Attempts[0].Error)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func newProxyTestStore(t *testing.T) *store.Store {

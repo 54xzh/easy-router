@@ -168,7 +168,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 			requestLog.Attempts = attempts
 			requestLog.HTTPStatus = statusClientClosedRequest
 			requestLog.DurationMS = time.Since(start).Milliseconds()
-			requestLog.Error = r.Context().Err().Error()
+			requestLog.Error = downstreamCancelMessage(r.Context().Err())
 			_ = h.store.AddRequestLog(requestLog)
 			writeJSON(w, statusClientClosedRequest, map[string]any{"error": requestLog.Error})
 			return
@@ -188,16 +188,16 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 			if requestCanceled(r.Context()) {
 				attempt.Status = "canceled"
 				attempt.HTTPStatus = statusClientClosedRequest
-				attempt.Error = err.Error()
+				attempt.Error = downstreamCancelMessage(r.Context().Err())
 				attempts = append(attempts, attempt)
 				requestLog.Status = "canceled"
 				requestLog.Attempts = attempts
 				requestLog.FinalModel = item.Model.InternalID
 				requestLog.HTTPStatus = statusClientClosedRequest
 				requestLog.DurationMS = time.Since(start).Milliseconds()
-				requestLog.Error = err.Error()
+				requestLog.Error = attempt.Error
 				_ = h.store.AddRequestLog(requestLog)
-				writeJSON(w, statusClientClosedRequest, map[string]any{"error": err.Error()})
+				writeJSON(w, statusClientClosedRequest, map[string]any{"error": requestLog.Error})
 				return
 			}
 			attempt.Status = "failed"
@@ -281,6 +281,9 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 	if err != nil {
 		if requestTimedOut(ctx, r.Context()) {
 			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout)
+		}
+		if errors.Is(err, context.Canceled) {
+			return http.StatusBadGateway, nil, nil, nil, true, fmt.Errorf("上游连接取消：%w", err)
 		}
 		return http.StatusBadGateway, nil, nil, nil, true, err
 	}
@@ -608,7 +611,7 @@ func isHopHeader(key string) bool {
 }
 
 func isFallbackable(status int, endpoint string) bool {
-	if status == http.StatusTooManyRequests || status >= 500 || status == http.StatusRequestTimeout {
+	if status == http.StatusTooManyRequests || status >= 500 || status == http.StatusRequestTimeout || status == statusClientClosedRequest {
 		return true
 	}
 	return endpoint == "/responses" && status == http.StatusNotFound
@@ -616,6 +619,13 @@ func isFallbackable(status int, endpoint string) bool {
 
 func requestCanceled(ctx context.Context) bool {
 	return ctx.Err() != nil
+}
+
+func downstreamCancelMessage(err error) string {
+	if err == nil {
+		return "下游请求已取消（客户端或前置代理）"
+	}
+	return "下游请求已取消（客户端或前置代理）：" + err.Error()
 }
 
 func requestTimedOut(ctx, parent context.Context) bool {
