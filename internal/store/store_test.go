@@ -211,3 +211,53 @@ func TestListReadsDoNotBlockWithNestedData(t *testing.T) {
 		t.Fatal("list reads blocked")
 	}
 }
+
+func TestSetRouteOverrideFalseClearsRecord(t *testing.T) {
+	s, err := Open(":memory:", "a-long-test-master-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.UpsertRoute(Route{
+		ID:      "coder-fast",
+		Name:    "coder-fast",
+		Enabled: true,
+		Steps: []RouteStep{{
+			Position:   1,
+			TargetType: "model",
+			TargetID:   "openai/gpt-4o",
+			Enabled:    true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	override := Override{
+		RouteID:    "coder-fast",
+		TargetType: "model",
+		TargetID:   "openai/gpt-4o",
+		Disabled:   true,
+	}
+	if err := s.SetRouteOverride(override); err != nil {
+		t.Fatal(err)
+	}
+	route, err := s.GetRoute("coder-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(route.Overrides) != 1 {
+		t.Fatalf("expected one override, got %d", len(route.Overrides))
+	}
+
+	override.Disabled = false
+	if err := s.SetRouteOverride(override); err != nil {
+		t.Fatal(err)
+	}
+	route, err = s.GetRoute("coder-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(route.Overrides) != 0 {
+		t.Fatalf("expected override to be cleared, got %d", len(route.Overrides))
+	}
+}

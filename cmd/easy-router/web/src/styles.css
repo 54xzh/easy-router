@@ -299,6 +299,11 @@ select {
   font-size: 12px;
 }
 
+.route-target-off {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
 .modal-form {
   display: flex;
   flex-direction: column;

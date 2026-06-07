@@ -504,6 +504,10 @@ func (s *Store) DeleteRoute(id string) error {
 }
 
 func (s *Store) SetRouteOverride(o Override) error {
+	if !o.Disabled {
+		_, err := s.db.Exec(`DELETE FROM route_overrides WHERE route_id = ? AND target_type = ? AND target_id = ?`, o.RouteID, o.TargetType, o.TargetID)
+		return err
+	}
 	_, err := s.db.Exec(`INSERT INTO route_overrides(route_id, target_type, target_id, disabled) VALUES(?, ?, ?, ?)
 		ON CONFLICT(route_id, target_type, target_id) DO UPDATE SET disabled = excluded.disabled`,
 		o.RouteID, o.TargetType, o.TargetID, boolInt(o.Disabled))

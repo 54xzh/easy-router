@@ -1072,7 +1072,7 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
       steps: route.steps.map((step) => ({
         target_type: step.target_type,
         target_id: step.target_id,
-        enabled: step.enabled,
+        enabled: routeStepEnabled(route, step),
       })),
     });
     setEditingID(route.id);
@@ -1108,7 +1108,19 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
           enabled: step.enabled,
         })),
       };
-      await put(`/api/admin/routes/${enc(isEditing ? editingID : id)}`, payload);
+      const routeID = isEditing ? editingID : id;
+      await put(`/api/admin/routes/${enc(routeID)}`, payload);
+      if (isEditing) {
+        await Promise.all(
+          payload.steps.map((step) =>
+            post(`/api/admin/routes/${enc(routeID)}/override`, {
+              target_type: step.target_type,
+              target_id: step.target_id,
+              disabled: false,
+            }),
+          ),
+        );
+      }
       close();
     });
   }
@@ -1293,23 +1305,41 @@ function Routes({ data, run }: { data: AppData; run: (task: () => Promise<void>)
 function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<void>) => void }) {
   const [selectedID, setSelectedID] = useState("");
   const selected = data.routes.find((route) => route.id === (selectedID || data.routes[0]?.id));
-  const overrideMap = useMemo(() => {
-    const map = new Map<string, boolean>();
-    selected?.overrides?.forEach((item) => {
-      map.set(`${item.target_type}:${item.target_id}`, item.disabled);
-    });
-    return map;
-  }, [selected]);
 
-  function disabled(type: "model" | "group", id: string) {
-    return overrideMap.get(`${type}:${id}`) === true;
+  function stepDisabled(step: RouteStep) {
+    return !routeStepEnabled(selected, step);
   }
 
-  function toggle(type: "model" | "group", id: string, enabled: boolean) {
+  function toggleStep(index: number, enabled: boolean) {
+    if (!selected) return;
+    const step = selected.steps[index];
+    const nextSteps = selected.steps.map((item, currentIndex) =>
+      currentIndex === index ? { ...item, enabled } : item,
+    );
+    run(async () => {
+      await put(`/api/admin/routes/${enc(selected.id)}`, {
+        id: selected.id,
+        name: selected.name,
+        enabled: selected.enabled,
+        steps: nextSteps,
+      });
+      await post(`/api/admin/routes/${enc(selected.id)}/override`, {
+        target_type: step.target_type,
+        target_id: step.target_id,
+        disabled: false,
+      });
+    });
+  }
+
+  function modelOverrideDisabled(id: string) {
+    return routeOverrideDisabled(selected, "model", id);
+  }
+
+  function toggleModelOverride(id: string, enabled: boolean) {
     if (!selected) return;
     run(async () => {
       await post(`/api/admin/routes/${enc(selected.id)}/override`, {
-        target_type: type,
+        target_type: "model",
         target_id: id,
         disabled: !enabled,
       });
@@ -1372,7 +1402,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       const y = stepLayouts[index].y;
       if (step.target_type === "group") {
         const group = data.groups.find((item) => item.id === step.target_id);
-        const isGroupDisabled = disabled("group", step.target_id);
+        const isGroupDisabled = stepDisabled(step);
         nodes.push({
           id: `step-${index}`,
           position: { x: leftX, y },
@@ -1391,12 +1421,12 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
                     compact
                     label=""
                     selected={!isGroupDisabled}
-                    onChange={(enabled) => toggle("group", step.target_id, enabled)}
+                    onChange={(enabled) => toggleStep(index, enabled)}
                   />
                 </div>
                 <div className="flow-member-list">
                   {group?.members.map((member) => {
-                    const modelOff = disabled("model", member.model_id);
+                    const modelOff = modelOverrideDisabled(member.model_id);
                     return (
                       <div className="flow-member-row" key={member.model_id}>
                         <span className="code" title={member.model_id}>
@@ -1406,7 +1436,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
                           compact
                           label=""
                           selected={!modelOff}
-                          onChange={(enabled) => toggle("model", member.model_id, enabled)}
+                          onChange={(enabled) => toggleModelOverride(member.model_id, enabled)}
                         />
                       </div>
                     );
@@ -1418,7 +1448,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
           type: "default",
         });
       } else {
-        const isModelDisabled = disabled("model", step.target_id);
+        const isModelDisabled = stepDisabled(step);
         nodes.push({
           id: `step-${index}`,
           position: { x: leftX, y },
@@ -1434,7 +1464,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
                     compact
                     label=""
                     selected={!isModelDisabled}
-                    onChange={(enabled) => toggle("model", step.target_id, enabled)}
+                    onChange={(enabled) => toggleStep(index, enabled)}
                   />
                 </div>
               </FlowBox>
@@ -1452,7 +1482,7 @@ function RouteSwitch({ data, run }: { data: AppData; run: (task: () => Promise<v
       });
     });
     return { nodes, edges };
-  }, [data.groups, disabled, run, selected, toggle]);
+  }, [data.groups, run, selected]);
 
   if (!selected) {
     return <div className="surface section muted">暂无路由</div>;
@@ -1787,37 +1817,48 @@ function ListRoutes({
       {routes.length === 0 ? (
         <div className="empty-state">暂无路由</div>
       ) : null}
-      {routes.map((route) => (
-        <div className="row" key={route.id} style={{ justifyContent: "space-between" }}>
-          <div>
-            <strong>{route.name}</strong> <span className="code">{route.id}</span>
-            <div className="muted">
-              {route.steps.length} 个目标 · {route.enabled ? "启用" : "禁用"}
-            </div>
-            {route.steps.length > 0 ? (
-              <div className="muted list-preview">
-                {route.steps
-                  .slice(0, 3)
-                  .map((step) =>
-                    step.target_type === "group"
-                      ? groupName(groups, step.target_id)
-                      : modelName(models, step.target_id),
-                  )
-                  .join(" → ")}
-                {route.steps.length > 3 ? " ..." : ""}
+      {routes.map((route) => {
+        const closedCount = routeClosedCount(route);
+        const previewSteps = route.steps.slice(0, 3);
+        return (
+          <div className="row" key={route.id} style={{ justifyContent: "space-between" }}>
+            <div>
+              <strong>{route.name}</strong> <span className="code">{route.id}</span>
+              <div className="muted">
+                {route.steps.length} 个目标 · {route.enabled ? "启用" : "禁用"} ·{" "}
+                {closedCount > 0 ? `${closedCount} 项关闭` : "全部打开"}
               </div>
-            ) : null}
+              {route.steps.length > 0 ? (
+                <div className="muted list-preview">
+                  {previewSteps.map((step, index) => {
+                    const name =
+                      step.target_type === "group"
+                        ? groupName(groups, step.target_id)
+                        : modelName(models, step.target_id);
+                    const enabled = routeStepEnabled(route, step);
+                    return (
+                      <span className={enabled ? undefined : "route-target-off"} key={`${step.target_type}:${step.target_id}`}>
+                        {name}
+                        {enabled ? "" : "（关闭）"}
+                        {index < previewSteps.length - 1 ? " → " : ""}
+                      </span>
+                    );
+                  })}
+                  {route.steps.length > 3 ? " ..." : ""}
+                </div>
+              ) : null}
+            </div>
+            <div className="row">
+              <Button size="sm" variant="tertiary" onPress={() => edit(route)}>
+                编辑
+              </Button>
+              <Button size="sm" variant="danger" onPress={() => remove(route.id)}>
+                <Trash2 size={14} />
+              </Button>
+            </div>
           </div>
-          <div className="row">
-            <Button size="sm" variant="tertiary" onPress={() => edit(route)}>
-              编辑
-            </Button>
-            <Button size="sm" variant="danger" onPress={() => remove(route.id)}>
-              <Trash2 size={14} />
-            </Button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1845,6 +1886,24 @@ function groupName(groups: ModelGroup[], id: string) {
 
 function targetKey(type: "model" | "group", id: string) {
   return `${type}:${id}`;
+}
+
+function routeOverrideDisabled(route: Route | undefined, type: "model" | "group", id: string) {
+  return route?.overrides?.some((item) => item.target_type === type && item.target_id === id && item.disabled) ?? false;
+}
+
+function routeStepEnabled(route: Route | undefined, step: Pick<RouteStep, "target_type" | "target_id" | "enabled">) {
+  return step.enabled && !routeOverrideDisabled(route, step.target_type, step.target_id);
+}
+
+function routeClosedCount(route: Route) {
+  const closedTargets = new Set(
+    route.steps.filter((step) => !routeStepEnabled(route, step)).map((step) => targetKey(step.target_type, step.target_id)),
+  );
+  const overrideOnly =
+    route.overrides?.filter((item) => item.disabled && !closedTargets.has(targetKey(item.target_type, item.target_id)))
+      .length ?? 0;
+  return closedTargets.size + overrideOnly;
 }
 
 function routeTargetID(type: "model" | "group", target?: ModelGroup | Model) {
