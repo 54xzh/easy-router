@@ -183,3 +183,7 @@ curl http://127.0.0.1:2778/v1/responses \
 - `internal/store`：SQLite 表结构、迁移和数据访问。
 - `data`：本地数据库默认目录。
 - `bin`：本地构建输出目录。
+
+## 开源协议
+
+本项目使用 GNU Affero General Public License v3.0（AGPL-3.0）开源，详见 [LICENSE](LICENSE)。
