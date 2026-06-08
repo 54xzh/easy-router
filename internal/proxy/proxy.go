@@ -28,6 +28,10 @@ const statusClientClosedRequest = 499
 type candidate struct {
 	Provider           store.Provider
 	Model              store.Model
+	LogModelID         string
+	LogProviderID      string
+	KeyName            string
+	KeyPrefix          string
 	Endpoint           string
 	Conversion         conversionMode
 	StreamIncludeUsage bool
@@ -188,8 +192,10 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		duration := time.Since(attemptStart).Milliseconds()
 		attempt := store.AttemptLog{
 			Position:   idx + 1,
-			ModelID:    item.Model.InternalID,
-			ProviderID: item.Model.ProviderID,
+			ModelID:    item.LogModelID,
+			ProviderID: item.LogProviderID,
+			KeyName:    item.KeyName,
+			KeyPrefix:  item.KeyPrefix,
 			HTTPStatus: statusCode,
 			DurationMS: duration,
 		}
@@ -202,7 +208,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 				attempts = append(attempts, attempt)
 				requestLog.Status = "canceled"
 				requestLog.Attempts = attempts
-				requestLog.FinalModel = item.Model.InternalID
+				requestLog.FinalModel = item.LogModelID
 				requestLog.HTTPStatus = statusClientClosedRequest
 				requestLog.DurationMS = time.Since(start).Milliseconds()
 				requestLog.Error = attempt.Error
@@ -223,7 +229,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 				continue
 			}
 			requestLog.Attempts = attempts
-			requestLog.FinalModel = item.Model.InternalID
+			requestLog.FinalModel = item.LogModelID
 			requestLog.HTTPStatus = statusCode
 			requestLog.DurationMS = time.Since(start).Milliseconds()
 			requestLog.Error = err.Error()
@@ -237,7 +243,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		_ = h.store.RecordModelSuccess(item.Model.InternalID)
 		requestLog.Status = "success"
 		requestLog.Attempts = attempts
-		requestLog.FinalModel = item.Model.InternalID
+		requestLog.FinalModel = item.LogModelID
 		requestLog.HTTPStatus = statusCode
 		requestLog.DurationMS = time.Since(start).Milliseconds()
 
@@ -354,31 +360,31 @@ func (h *Handler) resolveCandidates(clientModel string, payload map[string]any, 
 		return items, route.ID, err
 	}
 
-	raw, err := h.rawCandidate(clientModel, payload, api, streaming, autoDisableEnabled)
+	raw, err := h.rawCandidates(clientModel, payload, api, streaming, autoDisableEnabled)
 	if err != nil {
 		return nil, clientModel, err
 	}
-	return []candidate{raw}, clientModel, nil
+	return raw, clientModel, nil
 }
 
-func (h *Handler) rawCandidate(modelID string, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) (candidate, error) {
+func (h *Handler) rawCandidates(modelID string, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, error) {
 	rawModels, err := h.store.RawModelsForModelsEndpoint()
 	if err != nil {
-		return candidate{}, err
+		return nil, err
 	}
 	for _, model := range rawModels {
 		if model.InternalID == modelID {
-			item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled)
+			items, err := h.modelCandidates(model, payload, api, streaming, autoDisableEnabled)
 			if err != nil {
-				return candidate{}, err
+				return nil, err
 			}
-			if !ok {
-				return candidate{}, errNoCandidate
+			if len(items) == 0 {
+				return nil, errNoCandidate
 			}
-			return item, nil
+			return items, nil
 		}
 	}
-	return candidate{}, errRouteNotFound
+	return nil, errRouteNotFound
 }
 
 func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, error) {
@@ -398,15 +404,15 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			}
 			model, err := h.store.GetModel(step.TargetID)
 			if err == nil {
-				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
+				items, err := h.modelCandidates(model, payload, api, streaming, autoDisableEnabled)
+				if err != nil {
 					if errors.Is(err, errConversionUnsupported) {
 						conversionErrors = append(conversionErrors, model.InternalID+" "+err.Error())
 						continue
 					}
 					return nil, err
-				} else if ok {
-					out = append(out, item)
 				}
+				out = append(out, items...)
 			}
 			continue
 		}
@@ -427,15 +433,15 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 			}
 			models = h.orderGroupModels(group, models)
 			for _, model := range models {
-				if item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled); err != nil {
+				items, err := h.modelCandidates(model, payload, api, streaming, autoDisableEnabled)
+				if err != nil {
 					if errors.Is(err, errConversionUnsupported) {
 						conversionErrors = append(conversionErrors, model.InternalID+" "+err.Error())
 						continue
 					}
 					return nil, err
-				} else if ok {
-					out = append(out, item)
 				}
+				out = append(out, items...)
 			}
 		}
 	}
@@ -446,6 +452,39 @@ func (h *Handler) routeCandidates(route store.Route, payload map[string]any, api
 		return nil, errNoCandidate
 	}
 	return out, nil
+}
+
+func (h *Handler) modelCandidates(model store.Model, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, error) {
+	provider, err := h.store.GetProvider(model.ProviderID, false)
+	if err != nil {
+		return nil, err
+	}
+	if provider.ParentID != "" || !provider.MultiKeyEnabled {
+		item, ok, err := h.maybeCandidate(model, payload, api, streaming, autoDisableEnabled)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return []candidate{item}, nil
+	}
+	if !model.Enabled || !model.ProviderEnabled {
+		return nil, nil
+	}
+	keyModels, err := h.store.ListProviderKeyModels(provider.ID, model.OriginalID)
+	if err != nil {
+		return nil, err
+	}
+	keyModels = h.orderProviderKeyModels(provider, model.OriginalID, keyModels)
+	items := []candidate{}
+	for _, item := range keyModels {
+		candidate, ok, err := h.maybeCandidateWithLog(item.Model, payload, api, streaming, autoDisableEnabled, model.InternalID, model.ProviderID, item.Key.Name, item.Key.Prefix)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			items = append(items, candidate)
+		}
+	}
+	return items, nil
 }
 
 func (h *Handler) orderGroupModels(group store.ModelGroup, models []store.Model) []store.Model {
@@ -467,7 +506,30 @@ func (h *Handler) orderGroupModels(group store.ModelGroup, models []store.Model)
 	return ordered
 }
 
+func (h *Handler) orderProviderKeyModels(provider store.Provider, originalID string, items []store.ProviderKeyModel) []store.ProviderKeyModel {
+	if len(items) <= 1 {
+		return items
+	}
+	ordered := append([]store.ProviderKeyModel(nil), items...)
+	switch provider.MultiKeyStrategy {
+	case "random":
+		rand.Shuffle(len(ordered), func(i, j int) {
+			ordered[i], ordered[j] = ordered[j], ordered[i]
+		})
+	case "round_robin":
+		start, err := h.store.AdvanceMultiKeyCursor(provider.ID, originalID, len(ordered))
+		if err == nil && start > 0 {
+			ordered = append(ordered[start:], ordered[:start]...)
+		}
+	}
+	return ordered
+}
+
 func (h *Handler) maybeCandidate(model store.Model, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) (candidate, bool, error) {
+	return h.maybeCandidateWithLog(model, payload, api, streaming, autoDisableEnabled, model.InternalID, model.ProviderID, "", "")
+}
+
+func (h *Handler) maybeCandidateWithLog(model store.Model, payload map[string]any, api string, streaming bool, autoDisableEnabled bool, logModelID, logProviderID, keyName, keyPrefix string) (candidate, bool, error) {
 	if !model.Enabled || !model.ProviderEnabled || (autoDisableEnabled && (model.AutoDisabled || model.CoolingDown())) {
 		return candidate{}, false, nil
 	}
@@ -480,16 +542,22 @@ func (h *Handler) maybeCandidate(model store.Model, payload map[string]any, api 
 	if api == "responses" && !model.SupportsResponses && !model.SupportsChat {
 		return candidate{}, false, nil
 	}
-	return h.buildCandidate(model, payload, api, streaming)
+	return h.buildCandidate(model, payload, api, streaming, logModelID, logProviderID, keyName, keyPrefix)
 }
 
-func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api string, streaming bool) (candidate, bool, error) {
+func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api string, streaming bool, logModelID, logProviderID, keyName, keyPrefix string) (candidate, bool, error) {
 	provider, _, err := h.store.LoadProviderForModel(model.InternalID)
 	if err != nil {
 		return candidate{}, false, err
 	}
 	if !provider.Enabled {
 		return candidate{}, false, nil
+	}
+	if logModelID == "" {
+		logModelID = model.InternalID
+	}
+	if logProviderID == "" {
+		logProviderID = model.ProviderID
 	}
 	nextPayload := cloneMap(payload)
 	nextPayload["model"] = model.OriginalID
@@ -526,6 +594,10 @@ func (h *Handler) buildCandidate(model store.Model, payload map[string]any, api 
 	return candidate{
 		Provider:           provider,
 		Model:              model,
+		LogModelID:         logModelID,
+		LogProviderID:      logProviderID,
+		KeyName:            keyName,
+		KeyPrefix:          keyPrefix,
 		Endpoint:           endpoint,
 		Conversion:         conversion,
 		StreamIncludeUsage: streamIncludeUsage,

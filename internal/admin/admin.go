@@ -154,6 +154,10 @@ func (h *Handler) providers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) providerDetail(w http.ResponseWriter, r *http.Request, rest string) {
 	parts := strings.Split(rest, "/")
 	id, _ := url.PathUnescape(parts[0])
+	if len(parts) >= 2 && parts[1] == "keys" {
+		h.providerKeys(w, r, id, parts[2:])
+		return
+	}
 	if len(parts) == 2 && parts[1] == "sync" && r.Method == http.MethodPost {
 		h.discoverProviderModels(w, id)
 		return
@@ -192,6 +196,71 @@ func (h *Handler) providerDetail(w http.ResponseWriter, r *http.Request, rest st
 	}
 }
 
+func (h *Handler) providerKeys(w http.ResponseWriter, r *http.Request, providerID string, parts []string) {
+	if len(parts) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			keys, err := h.store.ListProviderKeys(providerID)
+			writeResult(w, keys, err)
+		case http.MethodPost:
+			var key store.ProviderKey
+			if !decodeJSON(w, r, &key) {
+				return
+			}
+			saved, err := h.store.AddProviderKey(providerID, key)
+			writeResult(w, saved, err)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "方法不支持"})
+		}
+		return
+	}
+	if len(parts) == 1 && parts[0] == "order" && r.Method == http.MethodPut {
+		var req struct {
+			IDs []string `json:"ids"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		keys, err := h.store.SetProviderKeyOrder(providerID, req.IDs)
+		writeResult(w, keys, err)
+		return
+	}
+	keyID, _ := url.PathUnescape(parts[0])
+	if len(parts) == 2 && parts[1] == "rotate" && r.Method == http.MethodPost {
+		var req struct {
+			APIKey string `json:"api_key"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		key, err := h.store.RotateProviderKey(providerID, keyID, req.APIKey)
+		writeResult(w, key, err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "restore" && r.Method == http.MethodPost {
+		writeResult(w, map[string]any{"ok": true}, h.store.RestoreProviderKeyModels(providerID, keyID))
+		return
+	}
+	if len(parts) != 1 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "接口不存在"})
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var key store.ProviderKey
+		if !decodeJSON(w, r, &key) {
+			return
+		}
+		key.ID = keyID
+		saved, err := h.store.UpdateProviderKey(providerID, key)
+		writeResult(w, saved, err)
+	case http.MethodDelete:
+		writeResult(w, map[string]any{"ok": true}, h.store.DeleteProviderKey(providerID, keyID))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "方法不支持"})
+	}
+}
+
 type discoveredModel struct {
 	OriginalID        string `json:"original_id"`
 	DisplayName       string `json:"display_name"`
@@ -203,7 +272,7 @@ type discoveredModel struct {
 }
 
 func (h *Handler) discoverProviderModels(w http.ResponseWriter, providerID string) {
-	provider, err := h.store.GetProvider(providerID, true)
+	provider, err := h.store.ProviderForModelDiscovery(providerID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
@@ -253,7 +322,7 @@ func (h *Handler) discoverProviderModels(w http.ResponseWriter, providerID strin
 		if item.ID == "" {
 			continue
 		}
-		internalID := store.InternalModelID(provider.ID, item.ID)
+		internalID := store.InternalModelID(providerID, item.ID)
 		models = append(models, discoveredModel{
 			OriginalID:        item.ID,
 			DisplayName:       item.ID,

@@ -399,6 +399,168 @@ func TestRouteFallsBackWhenCandidateCannotBeConverted(t *testing.T) {
 	}
 }
 
+func TestMultiKeyProviderRoundRobinUsesHiddenKeysAndLogsMainModel(t *testing.T) {
+	authHeaders := []string{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		writeJSON(w, http.StatusOK, map[string]any{"id": "ok", "choices": []any{}})
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	if _, err := s.UpsertProvider(store.Provider{
+		ID:              "openai",
+		Name:            "OpenAI",
+		BaseURL:         upstream.URL,
+		APIKey:          "sk-one",
+		Enabled:         true,
+		MultiKeyEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddProviderKey("openai", store.ProviderKey{Name: "Key 2", APIKey: "sk-two"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := s.UpsertModel(store.Model{
+		ProviderID:        "openai",
+		OriginalID:        "gpt-4o",
+		DisplayName:       "gpt-4o",
+		SupportsChat:      true,
+		SupportsResponses: true,
+		SupportsStream:    true,
+		Enabled:           true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+		w := httptest.NewRecorder()
+		h.completion(w, req, "chat")
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d unexpected status: %d body=%s", i+1, w.Code, w.Body.String())
+		}
+	}
+	if len(authHeaders) != 2 || authHeaders[0] != "Bearer sk-one" || authHeaders[1] != "Bearer sk-two" {
+		t.Fatalf("round robin should use both keys in order: %#v", authHeaders)
+	}
+	logs, err := s.ListLogs(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 || logs[0].FinalModel != model.InternalID || logs[0].Attempts[0].ModelID != model.InternalID {
+		t.Fatalf("logs should show the main model: %#v", logs)
+	}
+	seenKeys := map[string]bool{}
+	for _, log := range logs {
+		if len(log.Attempts) != 1 {
+			t.Fatalf("each request should have one attempt: %#v", logs)
+		}
+		seenKeys[log.Attempts[0].KeyName] = true
+	}
+	if !seenKeys["Key 1"] || !seenKeys["Key 2"] {
+		t.Fatalf("logs should keep key names: %#v", logs)
+	}
+}
+
+func TestModelGroupExpandsMultiKeyModelBeforeNextGroupMember(t *testing.T) {
+	normalCalled := make(chan struct{}, 1)
+	multiKeyUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-one" {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "first key failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": "ok", "choices": []any{}})
+	}))
+	defer multiKeyUpstream.Close()
+	normalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		normalCalled <- struct{}{}
+		writeJSON(w, http.StatusOK, map[string]any{"id": "normal", "choices": []any{}})
+	}))
+	defer normalUpstream.Close()
+
+	s := newProxyTestStore(t)
+	if _, err := s.UpsertProvider(store.Provider{
+		ID:               "openai",
+		Name:             "OpenAI",
+		BaseURL:          multiKeyUpstream.URL,
+		APIKey:           "sk-one",
+		Enabled:          true,
+		MultiKeyEnabled:  true,
+		MultiKeyStrategy: "fallback",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddProviderKey("openai", store.ProviderKey{Name: "Key 2", APIKey: "sk-two"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.UpsertModel(store.Model{
+		ProviderID:        "openai",
+		OriginalID:        "gpt-4o",
+		DisplayName:       "gpt-4o",
+		SupportsChat:      true,
+		SupportsResponses: true,
+		SupportsStream:    true,
+		Enabled:           true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := addProxyTestModel(t, s, "p2", "backup", normalUpstream.URL)
+	group, err := s.UpsertGroup(store.ModelGroup{
+		Name:     "group",
+		Strategy: "fallback",
+		Enabled:  true,
+		Members: []store.ModelGroupMember{
+			{ModelID: first.InternalID, Position: 1, Enabled: true},
+			{ModelID: second.InternalID, Position: 2, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRoute(store.Route{
+		ID:      "coder-fast",
+		Name:    "coder-fast",
+		Enabled: true,
+		Steps: []store.RouteStep{{
+			Position:   1,
+			TargetType: "group",
+			TargetID:   group.ID,
+			Enabled:    true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{store: s, client: &http.Client{Timeout: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[]}`))
+	w := httptest.NewRecorder()
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-normalCalled:
+		t.Fatal("backup model should not be used before the second key")
+	default:
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || len(logs[0].Attempts) != 2 {
+		t.Fatalf("expected two key attempts, got %#v", logs)
+	}
+	if logs[0].Attempts[0].ModelID != first.InternalID || logs[0].Attempts[1].KeyName != "Key 2" {
+		t.Fatalf("group should expand the multi-key model before backup: %#v", logs[0].Attempts)
+	}
+}
+
 func TestResponsesRequestConvertsChatModelResponse(t *testing.T) {
 	var upstreamPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -10,39 +10,35 @@ import (
 )
 
 func (s *Store) ListProviders() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, base_url, extra_headers_json, enabled, created_at, updated_at FROM providers ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, base_url, api_key_cipher, extra_headers_json, enabled, parent_id, multi_key_enabled, multi_key_strategy, key_name, key_prefix, key_position, created_at, updated_at FROM providers WHERE parent_id = '' ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	providers := []Provider{}
 	for rows.Next() {
-		var p Provider
-		var headers string
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &headers, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanProvider(rows, false, s.secretKey)
+		if err != nil {
 			return nil, err
 		}
-		p.ExtraHeaders = unmarshalHeaders(headers)
+		if err := s.fillProviderKeyCounts(&p); err != nil {
+			return nil, err
+		}
 		providers = append(providers, p)
 	}
 	return providers, rows.Err()
 }
 
 func (s *Store) GetProvider(id string, includeKey bool) (Provider, error) {
-	var p Provider
-	var headers, cipher string
-	err := s.db.QueryRow(`SELECT id, name, base_url, api_key_cipher, extra_headers_json, enabled, created_at, updated_at FROM providers WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.BaseURL, &cipher, &headers, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+	row := s.db.QueryRow(`SELECT id, name, base_url, api_key_cipher, extra_headers_json, enabled, parent_id, multi_key_enabled, multi_key_strategy, key_name, key_prefix, key_position, created_at, updated_at FROM providers WHERE id = ?`, id)
+	p, err := scanProvider(row, includeKey, s.secretKey)
 	if err != nil {
 		return Provider{}, err
 	}
-	p.ExtraHeaders = unmarshalHeaders(headers)
-	if includeKey {
-		key, err := decryptSecret(s.secretKey, cipher)
-		if err != nil {
+	if p.ParentID == "" {
+		if err := s.fillProviderKeyCounts(&p); err != nil {
 			return Provider{}, err
 		}
-		p.APIKey = key
 	}
 	return p, nil
 }
@@ -57,6 +53,9 @@ func (s *Store) UpsertProvider(p Provider) (Provider, error) {
 	if p.BaseURL == "" {
 		return Provider{}, errors.New("base_url 不能为空")
 	}
+	if p.MultiKeyStrategy == "" {
+		p.MultiKeyStrategy = "round_robin"
+	}
 	headers, err := marshalHeaders(p.ExtraHeaders)
 	if err != nil {
 		return Provider{}, err
@@ -64,7 +63,11 @@ func (s *Store) UpsertProvider(p Provider) (Provider, error) {
 	now := nowString()
 	var cipher string
 	var exists int
+	var old Provider
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id = ?`, p.ID).Scan(&exists)
+	if exists > 0 {
+		old, _ = s.GetProvider(p.ID, false)
+	}
 	if exists > 0 && p.APIKey == "" {
 		if err := s.db.QueryRow(`SELECT api_key_cipher FROM providers WHERE id = ?`, p.ID).Scan(&cipher); err != nil {
 			return Provider{}, err
@@ -76,21 +79,304 @@ func (s *Store) UpsertProvider(p Provider) (Provider, error) {
 		}
 	}
 	if exists == 0 {
-		_, err = s.db.Exec(`INSERT INTO providers(id, name, base_url, api_key_cipher, extra_headers_json, enabled, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-			p.ID, p.Name, p.BaseURL, cipher, headers, boolInt(p.Enabled), now, now)
+		_, err = s.db.Exec(`INSERT INTO providers(id, name, base_url, api_key_cipher, extra_headers_json, enabled, parent_id, multi_key_enabled, multi_key_strategy, key_name, key_prefix, key_position, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.ID, p.Name, p.BaseURL, cipher, headers, boolInt(p.Enabled), p.ParentID, boolInt(p.MultiKeyEnabled), p.MultiKeyStrategy, p.KeyName, p.KeyPrefix, p.KeyPosition, now, now)
 	} else {
-		_, err = s.db.Exec(`UPDATE providers SET name = ?, base_url = ?, api_key_cipher = ?, extra_headers_json = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-			p.Name, p.BaseURL, cipher, headers, boolInt(p.Enabled), now, p.ID)
+		_, err = s.db.Exec(`UPDATE providers SET name = ?, base_url = ?, api_key_cipher = ?, extra_headers_json = ?, enabled = ?, parent_id = ?, multi_key_enabled = ?, multi_key_strategy = ?, key_name = ?, key_prefix = ?, key_position = ?, updated_at = ? WHERE id = ?`,
+			p.Name, p.BaseURL, cipher, headers, boolInt(p.Enabled), p.ParentID, boolInt(p.MultiKeyEnabled), p.MultiKeyStrategy, p.KeyName, p.KeyPrefix, p.KeyPosition, now, p.ID)
 	}
 	if err != nil {
 		return Provider{}, err
 	}
+	if p.ParentID == "" {
+		if p.MultiKeyEnabled {
+			if err := s.ensureProviderHasInitialKey(p.ID); err != nil {
+				return Provider{}, err
+			}
+		} else if old.MultiKeyEnabled && p.APIKey == "" {
+			if err := s.copyFirstEnabledKeyToProvider(p.ID); err != nil {
+				return Provider{}, err
+			}
+		}
+		if err := s.syncProviderConfigToKeys(p.ID); err != nil {
+			return Provider{}, err
+		}
+	}
 	return s.GetProvider(p.ID, false)
 }
 
-func (s *Store) DeleteProvider(id string) error {
-	_, err := s.db.Exec(`DELETE FROM providers WHERE id = ?`, id)
+func scanProvider(row interface{ Scan(dest ...any) error }, includeKey bool, secretKey string) (Provider, error) {
+	var p Provider
+	var headers, cipher string
+	err := row.Scan(&p.ID, &p.Name, &p.BaseURL, &cipher, &headers, &p.Enabled, &p.ParentID, &p.MultiKeyEnabled, &p.MultiKeyStrategy, &p.KeyName, &p.KeyPrefix, &p.KeyPosition, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return Provider{}, err
+	}
+	p.ExtraHeaders = unmarshalHeaders(headers)
+	if p.MultiKeyStrategy == "" {
+		p.MultiKeyStrategy = "round_robin"
+	}
+	if includeKey {
+		key, err := decryptSecret(secretKey, cipher)
+		if err != nil {
+			return Provider{}, err
+		}
+		p.APIKey = key
+	}
+	return p, nil
+}
+
+func (s *Store) fillProviderKeyCounts(p *Provider) error {
+	if p.ParentID != "" {
+		return nil
+	}
+	return s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(enabled), 0) FROM providers WHERE parent_id = ?`, p.ID).Scan(&p.KeyCount, &p.EnabledKeyCount)
+}
+
+func (s *Store) ensureProviderHasInitialKey(providerID string) error {
+	keys, err := s.ListProviderKeys(providerID)
+	if err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		return nil
+	}
+	provider, err := s.GetProvider(providerID, true)
+	if err != nil {
+		return err
+	}
+	if provider.APIKey == "" {
+		return nil
+	}
+	_, err = s.AddProviderKey(providerID, ProviderKey{
+		Name:   "Key 1",
+		APIKey: provider.APIKey,
+	})
 	return err
+}
+
+func (s *Store) copyFirstEnabledKeyToProvider(providerID string) error {
+	keys, err := s.ListProviderKeys(providerID)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if !key.Enabled {
+			continue
+		}
+		child, err := s.GetProvider(key.ID, true)
+		if err != nil {
+			return err
+		}
+		cipher, err := encryptSecret(s.secretKey, child.APIKey)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.Exec(`UPDATE providers SET api_key_cipher = ?, updated_at = ? WHERE id = ?`, cipher, nowString(), providerID)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) syncProviderConfigToKeys(providerID string) error {
+	provider, err := s.GetProvider(providerID, false)
+	if err != nil {
+		return err
+	}
+	headers, err := marshalHeaders(provider.ExtraHeaders)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE providers SET base_url = ?, extra_headers_json = ?, updated_at = ? WHERE parent_id = ?`, provider.BaseURL, headers, nowString(), providerID)
+	return err
+}
+
+func (s *Store) DeleteProvider(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM providers WHERE parent_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM providers WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListProviderKeys(providerID string) ([]ProviderKey, error) {
+	rows, err := s.db.Query(`SELECT id, name, base_url, api_key_cipher, extra_headers_json, enabled, parent_id, multi_key_enabled, multi_key_strategy, key_name, key_prefix, key_position, created_at, updated_at FROM providers WHERE parent_id = ? ORDER BY key_position, created_at`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	keys := []ProviderKey{}
+	for rows.Next() {
+		provider, err := scanProvider(rows, false, s.secretKey)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		keys = append(keys, providerKeyFromProvider(provider))
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		if err := s.fillProviderKeyIssueCount(&keys[i]); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
+}
+
+func (s *Store) AddProviderKey(providerID string, key ProviderKey) (ProviderKey, error) {
+	parent, err := s.GetProvider(providerID, false)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	if parent.ParentID != "" {
+		return ProviderKey{}, errors.New("只能给主提供商添加 Key")
+	}
+	if strings.TrimSpace(key.APIKey) == "" {
+		return ProviderKey{}, errors.New("API Key 不能为空")
+	}
+	position, err := s.nextProviderKeyPosition(providerID)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	if key.Name == "" {
+		key.Name = fmt.Sprintf("Key %d", position)
+	}
+	key.ID = newID("kp")
+	key.ProviderID = providerID
+	key.Prefix = tokenPrefix(key.APIKey)
+	key.Position = position
+	key.Enabled = true
+	cipher, err := encryptSecret(s.secretKey, key.APIKey)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	headers, err := marshalHeaders(parent.ExtraHeaders)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	now := nowString()
+	if _, err := s.db.Exec(`INSERT INTO providers(id, name, base_url, api_key_cipher, extra_headers_json, enabled, parent_id, multi_key_enabled, multi_key_strategy, key_name, key_prefix, key_position, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?)`,
+		key.ID, key.Name, parent.BaseURL, cipher, headers, boolInt(key.Enabled), providerID, key.Name, key.Prefix, key.Position, now, now); err != nil {
+		return ProviderKey{}, err
+	}
+	if err := s.syncProviderModelsToKey(providerID, key.ID); err != nil {
+		return ProviderKey{}, err
+	}
+	return s.GetProviderKey(providerID, key.ID)
+}
+
+func (s *Store) GetProviderKey(providerID, keyID string) (ProviderKey, error) {
+	provider, err := s.GetProvider(keyID, false)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	if provider.ParentID != providerID {
+		return ProviderKey{}, sql.ErrNoRows
+	}
+	key := providerKeyFromProvider(provider)
+	return key, s.fillProviderKeyIssueCount(&key)
+}
+
+func (s *Store) UpdateProviderKey(providerID string, key ProviderKey) (ProviderKey, error) {
+	current, err := s.GetProviderKey(providerID, key.ID)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	if key.Name == "" {
+		key.Name = current.Name
+	}
+	_, err = s.db.Exec(`UPDATE providers SET name = ?, key_name = ?, enabled = ?, updated_at = ? WHERE id = ? AND parent_id = ?`, key.Name, key.Name, boolInt(key.Enabled), nowString(), key.ID, providerID)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	return s.GetProviderKey(providerID, key.ID)
+}
+
+func (s *Store) RotateProviderKey(providerID, keyID, apiKey string) (ProviderKey, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return ProviderKey{}, errors.New("API Key 不能为空")
+	}
+	if _, err := s.GetProviderKey(providerID, keyID); err != nil {
+		return ProviderKey{}, err
+	}
+	cipher, err := encryptSecret(s.secretKey, apiKey)
+	if err != nil {
+		return ProviderKey{}, err
+	}
+	prefix := tokenPrefix(apiKey)
+	if _, err := s.db.Exec(`UPDATE providers SET api_key_cipher = ?, key_prefix = ?, updated_at = ? WHERE id = ? AND parent_id = ?`, cipher, prefix, nowString(), keyID, providerID); err != nil {
+		return ProviderKey{}, err
+	}
+	return s.GetProviderKey(providerID, keyID)
+}
+
+func (s *Store) DeleteProviderKey(providerID, keyID string) error {
+	_, err := s.db.Exec(`DELETE FROM providers WHERE id = ? AND parent_id = ?`, keyID, providerID)
+	return err
+}
+
+func (s *Store) SetProviderKeyOrder(providerID string, ids []string) ([]ProviderKey, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for index, id := range ids {
+		if _, err := tx.Exec(`UPDATE providers SET key_position = ?, updated_at = ? WHERE id = ? AND parent_id = ?`, index+1, nowString(), id, providerID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.ListProviderKeys(providerID)
+}
+
+func (s *Store) RestoreProviderKeyModels(providerID, keyID string) error {
+	if _, err := s.GetProviderKey(providerID, keyID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE models SET auto_disabled = 0, auto_disabled_reason = '', fail_count = 0, window_start = '', last_failure_at = '', cooldown_until = '', cooldown_count = 0, upstream_error_status = 0, upstream_error_at = '', upstream_error = '', updated_at = ? WHERE provider_id = ?`, nowString(), keyID)
+	return err
+}
+
+func (s *Store) fillProviderKeyIssueCount(key *ProviderKey) error {
+	return s.db.QueryRow(`SELECT COUNT(*) FROM models WHERE provider_id = ? AND (auto_disabled = 1 OR cooldown_until > ?)`, key.ID, nowString()).Scan(&key.ModelIssueCount)
+}
+
+func (s *Store) nextProviderKeyPosition(providerID string) (int, error) {
+	var position int
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(key_position), 0) + 1 FROM providers WHERE parent_id = ?`, providerID).Scan(&position)
+	return position, err
+}
+
+func providerKeyFromProvider(provider Provider) ProviderKey {
+	name := provider.KeyName
+	if name == "" {
+		name = provider.Name
+	}
+	return ProviderKey{
+		ID:         provider.ID,
+		ProviderID: provider.ParentID,
+		Name:       name,
+		Prefix:     provider.KeyPrefix,
+		Enabled:    provider.Enabled,
+		Position:   provider.KeyPosition,
+		CreatedAt:  provider.CreatedAt,
+		UpdatedAt:  provider.UpdatedAt,
+	}
 }
 
 func (s *Store) UpsertModel(m Model) (Model, error) {
@@ -118,7 +404,17 @@ func (s *Store) UpsertModel(m Model) (Model, error) {
 			return Model{}, err
 		}
 	}
-	return s.GetModel(m.InternalID)
+	saved, err := s.GetModel(m.InternalID)
+	if err != nil {
+		return Model{}, err
+	}
+	provider, err := s.GetProvider(saved.ProviderID, false)
+	if err == nil && provider.ParentID == "" {
+		if err := s.syncProviderModelToKeys(saved); err != nil {
+			return Model{}, err
+		}
+	}
+	return saved, nil
 }
 
 func (s *Store) GetModel(id string) (Model, error) {
@@ -139,7 +435,7 @@ func (s *Store) ListModels() ([]Model, error) {
 	rows, err := s.db.Query(`SELECT m.internal_id, m.provider_id, m.original_id, m.display_name, m.supports_chat, m.supports_responses, m.supports_stream, m.context_length,
 		m.enabled, m.auto_disabled, m.auto_disabled_reason, m.fail_count, m.window_start, m.last_failure_at, m.cooldown_until, m.cooldown_count,
 		m.upstream_error_status, m.upstream_error_at, m.upstream_error, p.enabled
-		FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.provider_id, m.original_id`)
+		FROM models m JOIN providers p ON p.id = m.provider_id WHERE p.parent_id = '' ORDER BY m.provider_id, m.original_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +451,77 @@ func (s *Store) ListModels() ([]Model, error) {
 		models = append(models, m)
 	}
 	return models, rows.Err()
+}
+
+func (s *Store) syncProviderModelsToKey(providerID, keyID string) error {
+	rows, err := s.db.Query(`SELECT internal_id FROM models WHERE provider_id = ? ORDER BY original_id`, providerID)
+	if err != nil {
+		return err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		model, err := s.GetModel(id)
+		if err != nil {
+			return err
+		}
+		model.ProviderID = keyID
+		if _, err := s.UpsertModel(model); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) syncProviderModelToKeys(model Model) error {
+	keys, err := s.ListProviderKeys(model.ProviderID)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		copy := model
+		copy.ProviderID = key.ID
+		if _, err := s.UpsertModel(copy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ListProviderKeyModels(providerID, originalID string) ([]ProviderKeyModel, error) {
+	keys, err := s.ListProviderKeys(providerID)
+	if err != nil {
+		return nil, err
+	}
+	items := []ProviderKeyModel{}
+	for _, key := range keys {
+		if !key.Enabled {
+			continue
+		}
+		model, err := s.GetModel(internalModelID(key.ID, originalID))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		items = append(items, ProviderKeyModel{Key: key, Model: model})
+	}
+	return items, nil
 }
 
 func (s *Store) RestoreModel(id string) error {
@@ -361,6 +728,29 @@ func (s *Store) AdvanceGroupCursor(groupID string, size int) (int, error) {
 	}
 	next := (cursor + 1) % size
 	if _, err := tx.Exec(`UPDATE model_groups SET cursor = ? WHERE id = ?`, next, groupID); err != nil {
+		return 0, err
+	}
+	return cursor % size, tx.Commit()
+}
+
+func (s *Store) AdvanceMultiKeyCursor(providerID, originalID string, size int) (int, error) {
+	if size <= 0 {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO multi_key_model_cursors(provider_id, original_id, cursor) VALUES(?, ?, 0)`, providerID, originalID); err != nil {
+		return 0, err
+	}
+	var cursor int
+	if err := tx.QueryRow(`SELECT cursor FROM multi_key_model_cursors WHERE provider_id = ? AND original_id = ?`, providerID, originalID).Scan(&cursor); err != nil {
+		return 0, err
+	}
+	next := (cursor + 1) % size
+	if _, err := tx.Exec(`UPDATE multi_key_model_cursors SET cursor = ? WHERE provider_id = ? AND original_id = ?`, next, providerID, originalID); err != nil {
 		return 0, err
 	}
 	return cursor % size, tx.Commit()
@@ -583,8 +973,8 @@ func (s *Store) AddRequestLog(log RequestLog) error {
 		if attempt.Position == 0 {
 			attempt.Position = i + 1
 		}
-		if _, err := tx.Exec(`INSERT INTO attempt_logs(request_id, position, model_id, provider_id, status, http_status, duration_ms, error) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-			log.ID, attempt.Position, attempt.ModelID, attempt.ProviderID, attempt.Status, attempt.HTTPStatus, attempt.DurationMS, attempt.Error); err != nil {
+		if _, err := tx.Exec(`INSERT INTO attempt_logs(request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			log.ID, attempt.Position, attempt.ModelID, attempt.ProviderID, attempt.KeyName, attempt.KeyPrefix, attempt.Status, attempt.HTTPStatus, attempt.DurationMS, attempt.Error); err != nil {
 			return err
 		}
 	}
@@ -627,7 +1017,7 @@ func (s *Store) ListLogs(limit int) ([]RequestLog, error) {
 }
 
 func (s *Store) AttemptsForLog(requestID string) ([]AttemptLog, error) {
-	rows, err := s.db.Query(`SELECT id, request_id, position, model_id, provider_id, status, http_status, duration_ms, error FROM attempt_logs WHERE request_id = ? ORDER BY position`, requestID)
+	rows, err := s.db.Query(`SELECT id, request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, error FROM attempt_logs WHERE request_id = ? ORDER BY position`, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +1025,7 @@ func (s *Store) AttemptsForLog(requestID string) ([]AttemptLog, error) {
 	attempts := []AttemptLog{}
 	for rows.Next() {
 		var attempt AttemptLog
-		if err := rows.Scan(&attempt.ID, &attempt.RequestID, &attempt.Position, &attempt.ModelID, &attempt.ProviderID, &attempt.Status, &attempt.HTTPStatus, &attempt.DurationMS, &attempt.Error); err != nil {
+		if err := rows.Scan(&attempt.ID, &attempt.RequestID, &attempt.Position, &attempt.ModelID, &attempt.ProviderID, &attempt.KeyName, &attempt.KeyPrefix, &attempt.Status, &attempt.HTTPStatus, &attempt.DurationMS, &attempt.Error); err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, attempt)
@@ -683,6 +1073,27 @@ func (s *Store) LoadProviderForModel(modelID string) (Provider, Model, error) {
 	return provider, model, nil
 }
 
+func (s *Store) ProviderForModelDiscovery(providerID string) (Provider, error) {
+	provider, err := s.GetProvider(providerID, false)
+	if err != nil {
+		return Provider{}, err
+	}
+	if !provider.MultiKeyEnabled {
+		return s.GetProvider(providerID, true)
+	}
+	keys, err := s.ListProviderKeys(providerID)
+	if err != nil {
+		return Provider{}, err
+	}
+	for _, key := range keys {
+		if !key.Enabled {
+			continue
+		}
+		return s.GetProvider(key.ID, true)
+	}
+	return Provider{}, errors.New("请先启用至少一个 Key")
+}
+
 func (s *Store) RawModelsForModelsEndpoint() ([]Model, error) {
 	value, err := s.GetSetting("models_expose_raw")
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -701,7 +1112,11 @@ func (s *Store) RawModelsForModelsEndpoint() ([]Model, error) {
 	}
 	filtered := make([]Model, 0, len(models))
 	for _, model := range models {
-		if model.Enabled && model.ProviderEnabled && (!autoDisableEnabled || (!model.AutoDisabled && !model.CoolingDown())) {
+		provider, err := s.GetProvider(model.ProviderID, false)
+		if err != nil {
+			return nil, err
+		}
+		if model.Enabled && model.ProviderEnabled && (!autoDisableEnabled || provider.MultiKeyEnabled || (!model.AutoDisabled && !model.CoolingDown())) {
 			filtered = append(filtered, model)
 		}
 	}

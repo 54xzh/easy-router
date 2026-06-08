@@ -5,8 +5,26 @@ export type Provider = {
   api_key?: string;
   extra_headers: Record<string, string>;
   enabled: boolean;
+  parent_id?: string;
+  multi_key_enabled: boolean;
+  multi_key_strategy: "random" | "round_robin" | "fallback";
+  key_count?: number;
+  enabled_key_count?: number;
   created_at?: string;
   updated_at?: string;
+};
+
+export type ProviderKey = {
+  id: string;
+  provider_id: string;
+  name: string;
+  api_key?: string;
+  prefix: string;
+  enabled: boolean;
+  position: number;
+  model_issue_count: number;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Model = {
@@ -86,6 +104,8 @@ export type AttemptLog = {
   position: number;
   model_id: string;
   provider_id: string;
+  key_name: string;
+  key_prefix: string;
   status: string;
   http_status: number;
   duration_ms: number;

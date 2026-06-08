@@ -21,14 +21,40 @@ type Store struct {
 }
 
 type Provider struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	BaseURL      string            `json:"base_url"`
-	APIKey       string            `json:"api_key,omitempty"`
-	ExtraHeaders map[string]string `json:"extra_headers"`
-	Enabled      bool              `json:"enabled"`
-	CreatedAt    string            `json:"created_at"`
-	UpdatedAt    string            `json:"updated_at"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	BaseURL          string            `json:"base_url"`
+	APIKey           string            `json:"api_key,omitempty"`
+	ExtraHeaders     map[string]string `json:"extra_headers"`
+	Enabled          bool              `json:"enabled"`
+	ParentID         string            `json:"parent_id,omitempty"`
+	MultiKeyEnabled  bool              `json:"multi_key_enabled"`
+	MultiKeyStrategy string            `json:"multi_key_strategy"`
+	KeyName          string            `json:"key_name,omitempty"`
+	KeyPrefix        string            `json:"key_prefix,omitempty"`
+	KeyPosition      int               `json:"key_position,omitempty"`
+	KeyCount         int               `json:"key_count,omitempty"`
+	EnabledKeyCount  int               `json:"enabled_key_count,omitempty"`
+	CreatedAt        string            `json:"created_at"`
+	UpdatedAt        string            `json:"updated_at"`
+}
+
+type ProviderKey struct {
+	ID              string `json:"id"`
+	ProviderID      string `json:"provider_id"`
+	Name            string `json:"name"`
+	APIKey          string `json:"api_key,omitempty"`
+	Prefix          string `json:"prefix"`
+	Enabled         bool   `json:"enabled"`
+	Position        int    `json:"position"`
+	ModelIssueCount int    `json:"model_issue_count"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+type ProviderKeyModel struct {
+	Key   ProviderKey `json:"key"`
+	Model Model       `json:"model"`
 }
 
 type Model struct {
@@ -135,6 +161,8 @@ type AttemptLog struct {
 	Position   int    `json:"position"`
 	ModelID    string `json:"model_id"`
 	ProviderID string `json:"provider_id"`
+	KeyName    string `json:"key_name"`
+	KeyPrefix  string `json:"key_prefix"`
 	Status     string `json:"status"`
 	HTTPStatus int    `json:"http_status"`
 	DurationMS int64  `json:"duration_ms"`
@@ -192,6 +220,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			api_key_cipher TEXT NOT NULL,
 			extra_headers_json TEXT NOT NULL DEFAULT '{}',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			parent_id TEXT NOT NULL DEFAULT '',
+			multi_key_enabled INTEGER NOT NULL DEFAULT 0,
+			multi_key_strategy TEXT NOT NULL DEFAULT 'round_robin',
+			key_name TEXT NOT NULL DEFAULT '',
+			key_prefix TEXT NOT NULL DEFAULT '',
+			key_position INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -293,11 +327,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			position INTEGER NOT NULL,
 			model_id TEXT NOT NULL,
 			provider_id TEXT NOT NULL,
+			key_name TEXT NOT NULL DEFAULT '',
+			key_prefix TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			http_status INTEGER NOT NULL,
 			duration_ms INTEGER NOT NULL,
 			error TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY(request_id) REFERENCES request_logs(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS multi_key_model_cursors (
+			provider_id TEXT NOT NULL,
+			original_id TEXT NOT NULL,
+			cursor INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(provider_id, original_id)
 		)`,
 	}
 	for _, statement := range statements {
@@ -309,6 +351,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureModelCooldownColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderMultiKeyColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureAttemptKeyColumns(ctx); err != nil {
 		return err
 	}
 	defaults := map[string]string{
@@ -398,6 +446,67 @@ func (s *Store) ensureModelCooldownColumns(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ensureProviderMultiKeyColumns(ctx context.Context) error {
+	columns, err := s.tableColumns(ctx, "providers")
+	if err != nil {
+		return err
+	}
+	additions := map[string]string{
+		"parent_id":          `ALTER TABLE providers ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
+		"multi_key_enabled":  `ALTER TABLE providers ADD COLUMN multi_key_enabled INTEGER NOT NULL DEFAULT 0`,
+		"multi_key_strategy": `ALTER TABLE providers ADD COLUMN multi_key_strategy TEXT NOT NULL DEFAULT 'round_robin'`,
+		"key_name":           `ALTER TABLE providers ADD COLUMN key_name TEXT NOT NULL DEFAULT ''`,
+		"key_prefix":         `ALTER TABLE providers ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`,
+		"key_position":       `ALTER TABLE providers ADD COLUMN key_position INTEGER NOT NULL DEFAULT 0`,
+	}
+	for column, statement := range additions {
+		if !columns[column] {
+			if _, err := s.db.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureAttemptKeyColumns(ctx context.Context) error {
+	columns, err := s.tableColumns(ctx, "attempt_logs")
+	if err != nil {
+		return err
+	}
+	if !columns["key_name"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE attempt_logs ADD COLUMN key_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !columns["key_prefix"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE attempt_logs ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(ctx context.Context, table string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 func (s *Store) EnsureAdminUser() (string, error) {

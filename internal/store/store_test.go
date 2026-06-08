@@ -214,6 +214,130 @@ func TestMigrationAddsModelStateColumns(t *testing.T) {
 	}
 }
 
+func TestMultiKeyProviderCreatesHiddenKeyAndSyncsModels(t *testing.T) {
+	s, err := Open(":memory:", "a-long-test-master-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	provider, err := s.UpsertProvider(Provider{
+		ID:              "openai",
+		Name:            "OpenAI",
+		BaseURL:         "https://api.openai.com/v1",
+		APIKey:          "sk-one",
+		Enabled:         true,
+		MultiKeyEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !provider.MultiKeyEnabled || provider.MultiKeyStrategy != "round_robin" {
+		t.Fatalf("unexpected provider: %#v", provider)
+	}
+	keys, err := s.ListProviderKeys("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].Name != "Key 1" || keys[0].Prefix != "sk-one" {
+		t.Fatalf("unexpected migrated key: %#v", keys)
+	}
+
+	model, err := s.UpsertModel(Model{
+		ProviderID:        "openai",
+		OriginalID:        "gpt-4o",
+		DisplayName:       "GPT 4o",
+		SupportsChat:      true,
+		SupportsResponses: true,
+		SupportsStream:    true,
+		ContextLength:     128000,
+		Enabled:           true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := s.GetModel(InternalModelID(keys[0].ID, "gpt-4o"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hidden.DisplayName != model.DisplayName || hidden.ContextLength != model.ContextLength || !hidden.Enabled {
+		t.Fatalf("hidden model should copy manual fields: %#v", hidden)
+	}
+
+	model.DisplayName = "GPT 4o updated"
+	model.ContextLength = 64000
+	model.Enabled = false
+	if _, err := s.UpsertModel(model); err != nil {
+		t.Fatal(err)
+	}
+	hidden, err = s.GetModel(hidden.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hidden.DisplayName != "GPT 4o updated" || hidden.ContextLength != 64000 || hidden.Enabled {
+		t.Fatalf("hidden model should sync manual updates: %#v", hidden)
+	}
+
+	recordStoreModelFailures(t, s, hidden.InternalID, 1)
+	root, err := s.GetModel(model.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err = s.GetModel(hidden.InternalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.FailCount != 0 || hidden.FailCount != 1 {
+		t.Fatalf("hidden failure state should stay independent: root=%#v hidden=%#v", root, hidden)
+	}
+}
+
+func TestDisableMultiKeyKeepsHiddenKeysAndCopiesFirstEnabledKey(t *testing.T) {
+	s, err := Open(":memory:", "a-long-test-master-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.UpsertProvider(Provider{
+		ID:              "openai",
+		Name:            "OpenAI",
+		BaseURL:         "https://api.openai.com/v1",
+		APIKey:          "sk-first",
+		Enabled:         true,
+		MultiKeyEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddProviderKey("openai", ProviderKey{Name: "Key 2", APIKey: "sk-second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertProvider(Provider{
+		ID:              "openai",
+		Name:            "OpenAI",
+		BaseURL:         "https://api.openai.com/v1",
+		Enabled:         true,
+		MultiKeyEnabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider, err := s.GetProvider("openai", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.APIKey != "sk-first" || provider.MultiKeyEnabled {
+		t.Fatalf("single-key provider should use first enabled key: %#v", provider)
+	}
+	keys, err := s.ListProviderKeys("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("hidden keys should be preserved, got %d", len(keys))
+	}
+}
+
 func TestListReadsDoNotBlockWithNestedData(t *testing.T) {
 	s, err := Open(":memory:", "a-long-test-master-key")
 	if err != nil {
