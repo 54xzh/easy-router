@@ -14,19 +14,28 @@ func (s *Store) ListProviders() ([]Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	providers := []Provider{}
 	for rows.Next() {
 		p, err := scanProvider(rows, false, s.secretKey)
 		if err != nil {
-			return nil, err
-		}
-		if err := s.fillProviderKeyCounts(&p); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		providers = append(providers, p)
 	}
-	return providers, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range providers {
+		if err := s.fillProviderKeyCounts(&providers[i]); err != nil {
+			return nil, err
+		}
+	}
+	return providers, nil
 }
 
 func (s *Store) GetProvider(id string, includeKey bool) (Provider, error) {

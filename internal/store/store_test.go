@@ -409,6 +409,10 @@ func TestListReadsDoNotBlockWithNestedData(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
+		if _, err := s.ListProviders(); err != nil {
+			done <- err
+			return
+		}
 		if _, err := s.ListGroups(); err != nil {
 			done <- err
 			return
