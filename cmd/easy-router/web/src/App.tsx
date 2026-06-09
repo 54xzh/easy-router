@@ -655,7 +655,11 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
           variant="blur"
         >
           <Modal.Container scroll="inside" size="lg">
-            <Modal.Dialog className="config-dialog provider-config-dialog">
+            <Modal.Dialog
+              className={`config-dialog provider-config-dialog ${
+                form.multi_key_enabled ? "provider-config-dialog-multi" : ""
+              }`}
+            >
               <form className="modal-form" onSubmit={submit}>
                 <Modal.CloseTrigger />
                 <Modal.Header>
@@ -665,7 +669,11 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
 
                 </Modal.Header>
                 <Modal.Body className="config-modal-body provider-editor-body">
-                  <div className="provider-editor-grid">
+                  <div
+                    className={`provider-editor-grid ${
+                      form.multi_key_enabled ? "provider-editor-grid-multi" : ""
+                    }`}
+                  >
                     <div className="provider-editor-main">
                       <div className="grid-2">
                         <TextField
@@ -691,17 +699,16 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                         <Label>Base URL</Label>
                         <Input placeholder="https://api.openai.com/v1" />
                       </TextField>
-                      {!form.multi_key_enabled ? (
-                        <TextField
-                          fullWidth
-                          type="password"
-                          value={form.api_key ?? ""}
-                          onChange={(api_key) => setForm({ ...form, api_key })}
-                        >
-                          <Label>API Key</Label>
-                          <Input placeholder="编辑时留空表示不修改" />
-                        </TextField>
-                      ) : null}
+                      <TextField
+                        fullWidth
+                        type="password"
+                        isDisabled={form.multi_key_enabled}
+                        value={form.multi_key_enabled ? "" : (form.api_key ?? "")}
+                        onChange={(api_key) => setForm({ ...form, api_key })}
+                      >
+                        <Label>API Key</Label>
+                        <Input placeholder={form.multi_key_enabled ? "由右侧多 Key 管理" : "编辑时留空表示不修改"} />
+                      </TextField>
                       <TextField fullWidth value={headersText} onChange={setHeadersText}>
                         <Label>额外请求头 JSON</Label>
                         <TextArea rows={3} placeholder='{"HTTP-Referer":"http://localhost"}' />

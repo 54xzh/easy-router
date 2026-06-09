@@ -323,8 +323,20 @@ select {
 }
 
 .provider-config-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-width: min(760px, calc(100vw - 32px));
+  transition:
+    width 160ms ease,
+    max-width 160ms ease;
+}
+
+.provider-config-dialog-multi {
   width: min(1120px, calc(100vw - 32px));
   max-width: min(1120px, calc(100vw - 32px));
+}
+
+.provider-config-dialog .modal-form {
+  height: min(544px, calc(100dvh - 72px));
 }
 
 .config-modal-body {
@@ -334,14 +346,20 @@ select {
 }
 
 .provider-editor-body {
+  flex: 1;
   min-height: 0;
+  overflow: auto;
 }
 
 .provider-editor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+.provider-editor-grid-multi {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
 }
 
 .provider-editor-main,
@@ -389,7 +407,8 @@ select {
 .provider-key-list {
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
+  max-height: 196px;
+  overflow: auto;
   background: white;
 }
 
