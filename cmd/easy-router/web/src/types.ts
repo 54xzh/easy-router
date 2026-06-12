@@ -135,3 +135,25 @@ export type Settings = {
   auto_disable_models?: string;
   upstream_timeout_seconds?: string;
 };
+
+export type TabKey = "switch" | "providers" | "models" | "groups" | "routes" | "logs" | "settings";
+
+export type AppData = {
+  providers: Provider[];
+  models: Model[];
+  groups: ModelGroup[];
+  routes: Route[];
+  logs: RequestLog[];
+  settings: Settings;
+  keys: ProxyKey[];
+};
+
+export type RemoteModel = {
+  original_id: string;
+  display_name: string;
+  internal_id: string;
+  already_imported: boolean;
+  supports_chat: boolean;
+  supports_responses: boolean;
+  supports_stream: boolean;
+};
