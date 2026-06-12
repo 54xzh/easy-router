@@ -1,7 +1,7 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Background, Controls, Edge, MarkerType, Node, Position, ReactFlow } from "@xyflow/react";
 import { Activity, ArrowDown, ArrowUp, Boxes, Cable, Check, ChevronDown, ChevronRight, Copy, Download, Edit3, Eye, EyeOff, GitBranch, KeyRound, ListTree, Logs, Plus, RefreshCw, RotateCcw, Save, Settings as SettingsIcon, Shield, Trash2 } from "lucide-react";
-import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField } from "@heroui/react";
+import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField, Chip, Separator } from "@heroui/react";
 import { api, del, enc, patch, post, put } from "../api";
 import { AppData, Model, ModelGroup, ModelGroupMember, Provider, ProviderKey, ProxyKey, RequestLog, Route, RouteStep, Settings, RemoteModel, TabKey } from "../types";
 import { LabeledSwitch } from "../components/LabeledSwitch";
@@ -241,9 +241,9 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                 <div className="row provider-actions">
                   {provider.enabled ? <Status ok text="启用" /> : <Status text="禁用" />}
                   {provider.multi_key_enabled ? (
-                    <span className="badge">
+                    <Chip size="sm" variant="secondary">
                       多 Key {provider.enabled_key_count ?? 0}/{provider.key_count ?? 0} · {strategyLabel(provider.multi_key_strategy)}
-                    </span>
+                    </Chip>
                   ) : null}
                   <Button size="sm" variant="secondary" onPress={() => openEdit(provider)}>
                     <Edit3 size={14} />
@@ -355,7 +355,7 @@ function Providers({ data, run }: { data: AppData; run: (task: () => Promise<voi
                               onChange={() => toggleRemote(provider.id, model.original_id)}
                             />
                             <span className="code">{model.original_id}</span>
-                            {model.already_imported ? <span className="badge">已添加</span> : null}
+                            {model.already_imported ? <Chip size="sm" variant="secondary">已添加</Chip> : null}
                           </label>
                         );
                       })}
@@ -669,9 +669,9 @@ function ProviderKeyPanel({
                   <div className="row">
                     <span className="code">{key.prefix ? `${key.prefix}...` : "待保存"}</span>
                     {key.model_issue_count > 0 ? (
-                      <span className="badge badge-warning">{key.model_issue_count} 个异常模型</span>
+                      <Chip size="sm" variant="soft" color="warning">{key.model_issue_count} 个异常模型</Chip>
                     ) : (
-                      <span className="badge badge-success">状态正常</span>
+                      <Chip size="sm" variant="soft" color="success">状态正常</Chip>
                     )}
                   </div>
                   {existingProvider ? (
@@ -778,26 +778,26 @@ function ProviderModels({
                 <td>{model.internal_id}</td>
                 <td>
                   <div className="row">
-                    {model.supports_chat ? <span className="badge badge-success">Chat</span> : null}
-                    {model.supports_responses ? <span className="badge">Responses</span> : null}
-                    {model.supports_stream ? <span className="badge">流式</span> : null}
+                    {model.supports_chat ? <Chip size="sm" variant="soft" color="success">Chat</Chip> : null}
+                    {model.supports_responses ? <Chip size="sm" variant="secondary">Responses</Chip> : null}
+                    {model.supports_stream ? <Chip size="sm" variant="secondary">流式</Chip> : null}
                   </div>
                 </td>
                 <td>
                   <div className="stack-tight">
                     {autoDisableEnabled && model.auto_disabled ? (
-                      <span className="badge badge-danger">自动禁用</span>
+                      <Chip size="sm" variant="soft" color="danger">自动禁用</Chip>
                     ) : cooldownText ? (
-                      <span className="badge badge-warning">{cooldownText}</span>
+                      <Chip size="sm" variant="soft" color="warning">{cooldownText}</Chip>
                     ) : model.enabled ? (
                       <Status ok text="启用" />
                     ) : (
                       <Status text="禁用" />
                     )}
                     {issueLabel ? (
-                      <span className="badge badge-warning" title={modelIssueTitle(model)}>
+                      <Chip size="sm" variant="soft" color="warning" title={modelIssueTitle(model)}>
                         {issueLabel}
-                      </span>
+                      </Chip>
                     ) : null}
                   </div>
                 </td>

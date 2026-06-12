@@ -1,17 +1,16 @@
 @import "tailwindcss";
 @import "@heroui/styles";
 
-:root {
-  color-scheme: light;
-  --app-bg: #f6f7f8;
-  --panel: #ffffff;
-  --line: #d8dee7;
-  --ink: #172033;
-  --muted: #647084;
-  --accent-blue: #0b66d8;
-  --accent-green: #22863a;
-  --accent-orange: #d97706;
-  --danger: #c53b37;
+/* ============================================
+   Easy Router - Global Styles
+   Using HeroUI v3 Theme Variables
+   ============================================ */
+
+/* Smooth scrolling for the entire application */
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
@@ -20,81 +19,124 @@
 
 body {
   margin: 0;
-  background: var(--app-bg);
-  color: var(--ink);
+  background: var(--background);
+  color: var(--foreground);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+  line-height: 1.5;
 }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
+/* ============================================
+   Layout
+   ============================================ */
 
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
 }
 
+/* ============================================
+   Sidebar / Navigation
+   ============================================ */
+
 .sidebar {
-  border-right: 1px solid var(--line);
-  background: #fbfcfd;
-  padding: 22px 18px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 24px 16px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  box-shadow: var(--surface-shadow);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-weight: 750;
-  letter-spacing: 0;
+  gap: 12px;
+  font-weight: 700;
+  padding: 0 8px;
+  letter-spacing: -0.01em;
 }
 
 .brand-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
-  background: #152033;
-  color: white;
+  background: var(--foreground);
+  color: var(--surface);
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .nav-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .nav-button {
-  border: 0;
+  border: none;
   background: transparent;
   text-align: left;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 120ms ease;
+}
+
+.nav-button:hover {
+  background: var(--background-secondary);
+  color: var(--foreground);
+}
+
+.nav-button:active {
+  transform: scale(0.98);
 }
 
 .nav-button[data-active="true"] {
-  background: #e8f1ff;
-  color: #084fa8;
-  font-weight: 650;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--accent-soft) inset;
 }
+
+.nav-button[data-active="true"]:hover {
+  background: var(--accent-soft-hover);
+}
+
+.nav-button svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.nav-button[data-active="true"] svg {
+  opacity: 1;
+}
+
+/* ============================================
+   Main Content Area
+   ============================================ */
 
 .main {
   min-width: 0;
-  padding: 24px;
+  padding: 28px 32px;
+  background: var(--background);
 }
 
 .toolbar {
@@ -102,58 +144,76 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 24px;
 }
 
 .page-title {
   margin: 0;
-  font-size: 24px;
+  font-size: 26px;
+  font-weight: 700;
   line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
 }
 
 .page-subtitle {
   color: var(--muted);
-  margin-top: 5px;
+  margin-top: 6px;
   font-size: 14px;
+  line-height: 1.4;
 }
 
+/* ============================================
+   Surface / Card
+   ============================================ */
+
 .surface {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--surface-shadow);
+  transition: box-shadow 200ms ease;
+}
+
+.surface:hover {
+  box-shadow: var(--surface-shadow), 0 4px 12px rgba(0, 0, 0, 0.04);
 }
 
 .section {
-  padding: 18px;
+  padding: 20px;
 }
 
 .section + .section {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--separator);
 }
+
+/* ============================================
+   Grid & Flex Utilities
+   ============================================ */
 
 .grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
+  gap: 16px;
 }
 
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .stack-tight {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
 }
 
 .row {
@@ -178,6 +238,10 @@ select {
   color: var(--muted);
 }
 
+/* ============================================
+   Tables
+   ============================================ */
+
 .table-wrap {
   overflow: auto;
 }
@@ -190,17 +254,38 @@ select {
 
 .data-table th,
 .data-table td {
-  border-bottom: 1px solid var(--line);
-  padding: 11px 10px;
+  border-bottom: 1px solid var(--separator);
+  padding: 12px 14px;
   text-align: left;
   vertical-align: top;
+  transition: background-color 150ms ease;
 }
 
 .data-table th {
   color: var(--muted);
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface-secondary);
 }
+
+.data-table tbody tr {
+  transition: background-color 150ms ease;
+}
+
+.data-table tbody tr:hover {
+  background: var(--background-secondary);
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ============================================
+   Provider List
+   ============================================ */
 
 .provider-list {
   display: flex;
@@ -208,7 +293,7 @@ select {
 }
 
 .provider-item + .provider-item {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--separator);
 }
 
 .provider-header {
@@ -216,7 +301,12 @@ select {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 16px 18px;
+  padding: 16px 20px;
+  transition: background-color 150ms ease;
+}
+
+.provider-header:hover {
+  background: var(--background-secondary);
 }
 
 .provider-title {
@@ -232,54 +322,87 @@ select {
 }
 
 .provider-detail {
-  border-top: 1px solid var(--line);
-  padding: 16px 18px 18px;
-  background: #fbfcfd;
+  border-top: 1px solid var(--separator);
+  padding: 18px 20px 20px;
+  background: var(--background-secondary);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .provider-models {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
 }
 
+/* ============================================
+   Buttons
+   ============================================ */
+
 .icon-button {
-  width: 30px;
-  height: 30px;
-  border: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
   display: grid;
   place-items: center;
   cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 120ms ease;
 }
 
 .icon-button:hover {
-  background: #eef2f7;
-  color: var(--ink);
+  background: var(--background-secondary);
+  color: var(--foreground);
 }
+
+.icon-button:active {
+  transform: scale(0.92);
+}
+
+/* ============================================
+   Forms
+   ============================================ */
 
 .inline-form {
-  background: #fbfcfd;
+  background: var(--background-secondary);
 }
+
+/* ============================================
+   Empty State
+   ============================================ */
 
 .empty-state {
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 20px;
   color: var(--muted);
-  background: white;
+  background: var(--surface-secondary);
+  text-align: center;
+  font-size: 14px;
+  transition: all 150ms ease;
 }
 
+.empty-state:hover {
+  border-color: var(--muted);
+  background: var(--background-secondary);
+}
+
+/* ============================================
+   Model Pick List
+   ============================================ */
+
 .model-pick-list {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
-  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -289,27 +412,46 @@ select {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 6px;
+  padding: 8px 10px;
   border-radius: 8px;
+  transition: background-color 150ms ease;
+  cursor: pointer;
 }
 
 .model-pick-row:hover {
-  background: #f5f7fa;
+  background: var(--background-secondary);
 }
+
+.model-pick-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* ============================================
+   List Header
+   ============================================ */
 
 .list-header {
   justify-content: space-between;
 }
 
 .list-preview {
-  margin-top: 5px;
+  margin-top: 6px;
   font-size: 12px;
 }
+
+/* ============================================
+   Route Target
+   ============================================ */
 
 .route-target-off {
   color: var(--danger);
   text-decoration: line-through;
+  opacity: 0.7;
 }
+
+/* ============================================
+   Modal Forms
+   ============================================ */
 
 .modal-form {
   display: flex;
@@ -342,7 +484,7 @@ select {
 .config-modal-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .provider-editor-body {
@@ -354,7 +496,7 @@ select {
 .provider-editor-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -367,18 +509,18 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .provider-switches {
   display: flex;
-  gap: 16px;
+  gap: 20px;
   flex-wrap: wrap;
 }
 
 .provider-key-panel {
-  border-left: 1px solid var(--line);
-  padding-left: 18px;
+  border-left: 1px solid var(--separator);
+  padding-left: 20px;
 }
 
 .provider-key-heading {
@@ -391,6 +533,7 @@ select {
 .provider-key-heading h3 {
   margin: 0;
   font-size: 18px;
+  font-weight: 600;
 }
 
 .provider-key-strategy {
@@ -405,11 +548,11 @@ select {
 }
 
 .provider-key-list {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   max-height: 196px;
   overflow: auto;
-  background: white;
+  background: var(--surface);
 }
 
 .provider-key-row {
@@ -417,11 +560,16 @@ select {
   grid-template-columns: 34px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
-  padding: 12px;
+  padding: 14px;
+  transition: background-color 150ms ease;
+}
+
+.provider-key-row:hover {
+  background: var(--background-secondary);
 }
 
 .provider-key-row + .provider-key-row {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--separator);
 }
 
 .provider-key-index {
@@ -430,10 +578,11 @@ select {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: #eef2f7;
+  background: var(--background-secondary);
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .provider-key-main {
@@ -459,58 +608,14 @@ select {
 .provider-key-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   max-width: 230px;
 }
 
-@media (max-width: 980px) {
-  .provider-editor-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .provider-key-panel {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-    padding-left: 0;
-    padding-top: 16px;
-  }
-}
-
-@media (max-width: 680px) {
-  .grid-2,
-  .provider-key-add,
-  .provider-key-row,
-  .provider-key-rotate {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .provider-key-actions {
-    justify-content: flex-start;
-    max-width: none;
-  }
-}
-
-.confirm-dialog {
-  width: min(420px, calc(100vw - 32px));
-  max-width: min(420px, calc(100vw - 32px));
-}
-
-.confirm-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.confirm-message,
-.confirm-warning {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.confirm-target {
-  word-break: break-word;
-}
+/* ============================================
+   Select Field
+   ============================================ */
 
 .select-field {
   min-width: 180px;
@@ -551,10 +656,14 @@ select {
   white-space: nowrap;
 }
 
+/* ============================================
+   Config Editor
+   ============================================ */
+
 .config-editor {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .config-add-row {
@@ -569,10 +678,10 @@ select {
 }
 
 .config-list {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   overflow: hidden;
-  background: white;
+  background: var(--surface);
 }
 
 .config-row {
@@ -580,11 +689,16 @@ select {
   grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 12px;
+  padding: 14px;
+  transition: background-color 150ms ease;
+}
+
+.config-row:hover {
+  background: var(--background-secondary);
 }
 
 .config-row + .config-row {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--separator);
 }
 
 .config-index {
@@ -593,10 +707,11 @@ select {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: #eef2f7;
+  background: var(--background-secondary);
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .config-row-main {
@@ -611,14 +726,23 @@ select {
   justify-content: flex-end;
 }
 
+/* ============================================
+   Code / Monospace
+   ============================================ */
+
 .code {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
-  background: #eef2f7;
+  background: var(--background-secondary);
   border-radius: 6px;
   padding: 2px 6px;
   word-break: break-all;
+  color: var(--foreground);
 }
+
+/* ============================================
+   Key / Secret
+   ============================================ */
 
 .key-token {
   display: grid;
@@ -638,65 +762,81 @@ select {
   overflow-wrap: anywhere;
 }
 
+/* ============================================
+   Badge (Legacy - kept for compatibility)
+   ============================================ */
+
 .badge {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 2px 10px;
   font-size: 12px;
-  border: 1px solid var(--line);
-  background: #f8fafc;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
   white-space: nowrap;
+  line-height: 1.4;
+  transition: all 150ms ease;
 }
 
 .badge-success {
-  color: #176c2f;
-  background: #eefaf0;
-  border-color: #bfe7c7;
+  color: var(--success-foreground);
+  background: var(--success-soft);
+  border-color: color-mix(in oklab, var(--success) 30%, transparent);
 }
 
 .badge-danger {
-  color: #9c2925;
-  background: #fff1f0;
-  border-color: #f2bfbd;
+  color: var(--danger-foreground);
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 30%, transparent);
 }
 
 .badge-warning {
-  color: #8a5200;
-  background: #fff7e6;
-  border-color: #f1d49b;
+  color: var(--warning-foreground);
+  background: var(--warning-soft);
+  border-color: color-mix(in oklab, var(--warning) 30%, transparent);
 }
 
+/* ============================================
+   Flow (React Flow)
+   ============================================ */
+
 .flow-shell {
-  height: calc(100vh - 168px);
+  height: calc(100vh - 180px);
   min-height: 560px;
   overflow: hidden;
 }
 
 .flow-node {
   width: 430px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
-  padding: 12px;
-  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 14px;
+  box-shadow: var(--surface-shadow);
   line-height: 1.3;
   text-align: left;
+  transition: box-shadow 200ms ease;
+}
+
+.flow-node:hover {
+  box-shadow: var(--surface-shadow), 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
 .flow-node-route {
   width: 340px;
-  border-color: #8ec49a;
-  background: #f8fff9;
+  border-color: var(--success);
+  background: color-mix(in oklab, var(--success) 5%, var(--surface));
 }
 
 .flow-node-group {
-  border-color: #adc4e8;
-  background: #f5f8ff;
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 5%, var(--surface));
 }
 
 .flow-node-model {
-  border-color: #d5dbe5;
+  border-color: var(--border);
 }
 
 .flow-node-header,
@@ -730,7 +870,7 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 15px;
-  font-weight: 750;
+  font-weight: 700;
 }
 
 .flow-node-meta {
@@ -815,19 +955,72 @@ select {
   text-align: left;
 }
 
+/* ============================================
+   Login Page
+   ============================================ */
+
 .login-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
+  background: var(--background);
 }
 
 .login-box {
   width: min(420px, 100%);
 }
 
+/* ============================================
+   Error States
+   ============================================ */
+
 .error {
   color: var(--danger);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ============================================
+   Confirm Dialog
+   ============================================ */
+
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirm-message,
+.confirm-warning {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm-target {
+  word-break: break-word;
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+
+@media (max-width: 980px) {
+  .provider-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-key-panel {
+    border-left: 0;
+    border-top: 1px solid var(--separator);
+    padding-left: 0;
+    padding-top: 16px;
+  }
 }
 
 @media (max-width: 900px) {
@@ -840,16 +1033,20 @@ select {
     top: 0;
     z-index: 5;
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
+    height: auto;
+    padding: 12px 16px;
   }
 
   .nav-list {
     flex-direction: row;
     overflow-x: auto;
+    gap: 4px;
   }
 
   .nav-button {
     white-space: nowrap;
+    padding: 8px 12px;
   }
 
   .grid-2,
@@ -889,4 +1086,58 @@ select {
   .config-index {
     display: none;
   }
+}
+
+@media (max-width: 680px) {
+  .grid-2,
+  .grid-3,
+  .provider-key-add,
+  .provider-key-row,
+  .provider-key-rotate {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-key-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .main {
+    padding: 20px 16px;
+  }
+
+  .page-title {
+    font-size: 22px;
+  }
+}
+
+/* ============================================
+   Scrollbar Styling
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* ============================================
+   Selection
+   ============================================ */
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent);
 }

@@ -1,7 +1,7 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Background, Controls, Edge, MarkerType, Node, Position, ReactFlow } from "@xyflow/react";
 import { Activity, ArrowDown, ArrowUp, Boxes, Cable, Check, ChevronDown, ChevronRight, Copy, Download, Edit3, Eye, EyeOff, GitBranch, KeyRound, ListTree, Logs, Plus, RefreshCw, RotateCcw, Save, Settings as SettingsIcon, Shield, Trash2 } from "lucide-react";
-import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField } from "@heroui/react";
+import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField, Chip } from "@heroui/react";
 import { api, del, enc, patch, post, put } from "../api";
 import { AppData, Model, ModelGroup, ModelGroupMember, Provider, ProviderKey, ProxyKey, RequestLog, Route, RouteStep, Settings, RemoteModel, TabKey } from "../types";
 import { LabeledSwitch } from "../components/LabeledSwitch";
@@ -73,18 +73,18 @@ function Models({ data, run }: { data: AppData; run: (task: () => Promise<void>)
                       onChange={(value) => updateModel(model, { enabled: value })}
                     />
                     {autoDisabledActive ? (
-                      <span className="badge badge-danger">自动禁用</span>
+                      <Chip size="sm" variant="soft" color="danger">自动禁用</Chip>
                     ) : cooldownText ? (
-                      <span className="badge badge-warning">{cooldownText}</span>
+                      <Chip size="sm" variant="soft" color="warning">{cooldownText}</Chip>
                     ) : !autoDisableOn && modelHasAutoState(model) ? (
-                      <span className="badge badge-warning">自动禁用已关闭</span>
+                      <Chip size="sm" variant="soft" color="warning">自动禁用已关闭</Chip>
                     ) : !issueLabel ? (
                       <Status ok text="正常" />
                     ) : null}
                     {issueLabel ? (
-                      <span className="badge badge-warning" title={modelIssueTitle(model)}>
+                      <Chip size="sm" variant="soft" color="warning" title={modelIssueTitle(model)}>
                         {issueLabel}
-                      </span>
+                      </Chip>
                     ) : null}
                   </div>
                 </td>

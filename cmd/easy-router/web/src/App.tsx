@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Activity, Boxes, Cable, GitBranch, ListTree, LogOut, Logs, RefreshCw, Settings as SettingsIcon } from "lucide-react";
-import { Button } from "@heroui/react";
+import { Button, Separator } from "@heroui/react";
 import { api, post } from "./api";
 import type { AppData, Model, ModelGroup, Provider, ProxyKey, RequestLog, Route, Settings, TabKey } from "./types";
 import { Providers } from "./pages/Providers";
@@ -160,7 +160,19 @@ export default function App() {
   }
 
   if (!ready) {
-    return <div className="login-page muted">正在加载...</div>;
+    return (
+      <div className="login-page">
+        <div className="surface section stack" style={{ textAlign: "center" }}>
+          <div className="brand-mark" style={{ margin: "0 auto" }}>
+            <Cable size={20} />
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 16 }}>正在加载...</div>
+            <div className="muted" style={{ fontSize: 14, marginTop: 4 }}>Easy Router</div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (!authed) {
@@ -175,12 +187,13 @@ export default function App() {
             <Cable size={18} />
           </div>
           <div>
-            <div>Easy Router</div>
-            <div className="muted" style={{ fontSize: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Easy Router</div>
+            <div className="muted" style={{ fontSize: 11, fontWeight: 500 }}>
               LLM Proxy
             </div>
           </div>
         </div>
+
         <nav className="nav-list">
           {navItems.map((item) => (
             <button
@@ -194,8 +207,12 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="muted" style={{ marginTop: "auto", fontSize: 12 }}>
-          默认地址：127.0.0.1:2778
+
+        <div style={{ marginTop: "auto" }}>
+          <Separator className="my-3" />
+          <div className="muted" style={{ fontSize: 11, padding: "0 8px", fontWeight: 500 }}>
+            默认地址：127.0.0.1:2778
+          </div>
         </div>
       </aside>
 
@@ -216,7 +233,11 @@ export default function App() {
           </div>
         </div>
 
-        {error ? <div className="section surface error">{error}</div> : null}
+        {error ? (
+          <div className="surface section error" style={{ marginBottom: 16 }}>
+            {error}
+          </div>
+        ) : null}
 
         {active === "switch" && <RouteSwitch data={data} run={run} />}
         {active === "providers" && <Providers data={data} run={run} />}

@@ -1,7 +1,7 @@
 import React, { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Background, Controls, Edge, MarkerType, Node, Position, ReactFlow } from "@xyflow/react";
 import { Activity, ArrowDown, ArrowUp, Boxes, Cable, Check, ChevronDown, ChevronRight, Copy, Download, Edit3, Eye, EyeOff, GitBranch, KeyRound, ListTree, Logs, Plus, RefreshCw, RotateCcw, Save, Settings as SettingsIcon, Shield, Trash2 } from "lucide-react";
-import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField } from "@heroui/react";
+import { Button, Description, Input, Label, ListBox, Modal, Select, Switch, TextArea, TextField, Chip } from "@heroui/react";
 import { api, del, enc, patch, post, put } from "../api";
 import { AppData, Model, ModelGroup, ModelGroupMember, Provider, ProviderKey, ProxyKey, RequestLog, Route, RouteStep, Settings, RemoteModel, TabKey } from "../types";
 import { LabeledSwitch } from "../components/LabeledSwitch";
@@ -49,9 +49,9 @@ function LogsView({ logs }: { logs: RequestLog[] }) {
                     <div key={attempt.id}>
                       <span className="code">{attempt.model_id}</span>{" "}
                       {attempt.key_name ? (
-                        <span className="badge">
+                        <Chip size="sm" variant="secondary">
                           {attempt.key_name} {attempt.key_prefix ? `· ${attempt.key_prefix}...` : ""}
-                        </span>
+                        </Chip>
                       ) : null}{" "}
                       <span className="muted">
                         {attempt.status} · {attempt.http_status} · {attempt.duration_ms}ms
