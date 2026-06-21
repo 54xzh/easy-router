@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -564,4 +565,129 @@ func storeTableColumns(t *testing.T, s *Store, table string) map[string]bool {
 		t.Fatal(err)
 	}
 	return columns
+}
+
+func TestListLogsFilteredStatusCursorAndAttempts(t *testing.T) {
+	s, err := Open(":memory:", "a-long-test-master-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.ensureLogFirstTokenColumns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	addLog := func(id, status, clientModel, finalModel, errMsg string, firstToken int64, created string) {
+		t.Helper()
+		if err := s.AddRequestLog(RequestLog{
+			ID:           id,
+			CreatedAt:    created,
+			API:          "chat",
+			RouteID:      "route-1",
+			ClientModel:  clientModel,
+			FinalModel:   finalModel,
+			Status:       status,
+			HTTPStatus:   200,
+			DurationMS:   120,
+			FirstTokenMS: firstToken,
+			Error:        errMsg,
+			Attempts: []AttemptLog{{
+				ModelID:      finalModel,
+				ProviderID:   "openai",
+				Status:       status,
+				HTTPStatus:   200,
+				DurationMS:   80,
+				FirstTokenMS: firstToken,
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	addLog("req-a", "success", "gpt-4o", "openai/gpt-4o", "", 50, "2024-01-01T00:00:00Z")
+	addLog("req-b", "failed", "gpt-4o", "openai/gpt-4o", "boom timeout", 0, "2024-01-01T00:01:00Z")
+	addLog("req-c", "success", "claude", "anthropic/claude", "", 70, "2024-01-01T00:02:00Z")
+	addLog("req-d", "success", "gpt-4o", "openai/gpt-4o", "", 40, "2024-01-01T00:03:00Z")
+
+	// status filter
+	page, err := s.ListLogsFiltered(LogFilter{Status: "failed", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "req-b" {
+		t.Fatalf("status filter mismatch: %+v", page.Items)
+	}
+	if page.NextCursor != nil {
+		t.Fatalf("expected no cursor, got %+v", page.NextCursor)
+	}
+
+	// client_model filter
+	page, err = s.ListLogsFiltered(LogFilter{ClientModel: "claude", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "req-c" {
+		t.Fatalf("client model filter mismatch: %+v", page.Items)
+	}
+
+	// keyword search matches error text
+	page, err = s.ListLogsFiltered(LogFilter{Q: "timeout", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "req-b" {
+		t.Fatalf("q filter mismatch: %+v", page.Items)
+	}
+
+	// cursor pagination: limit 2, then fetch next page using cursor
+	page, err = s.ListLogsFiltered(LogFilter{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "req-d" || page.Items[1].ID != "req-c" {
+		t.Fatalf("first page mismatch: %+v", page.Items)
+	}
+	if page.NextCursor == nil {
+		t.Fatal("expected next cursor")
+	}
+	cursor := *page.NextCursor
+	page, err = s.ListLogsFiltered(LogFilter{CursorCreatedAt: cursor.CreatedAt, CursorID: cursor.ID, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "req-b" || page.Items[1].ID != "req-a" {
+		t.Fatalf("second page mismatch: %+v", page.Items)
+	}
+	if page.NextCursor != nil {
+		t.Fatalf("expected no further cursor, got %+v", page.NextCursor)
+	}
+
+	// attempts batch-loaded and first_token_ms persisted
+	page, err = s.ListLogsFiltered(LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if item.Status == "success" {
+			if item.FirstTokenMS == 0 {
+				t.Fatalf("expected first_token_ms on %s", item.ID)
+			}
+		}
+		if len(item.Attempts) != 1 {
+			t.Fatalf("expected 1 attempt on %s, got %d", item.ID, len(item.Attempts))
+		}
+		if item.Attempts[0].FirstTokenMS != item.FirstTokenMS {
+			t.Fatalf("attempt first_token_ms mismatch on %s: %d vs %d", item.ID, item.Attempts[0].FirstTokenMS, item.FirstTokenMS)
+		}
+	}
+
+	// ListLogs wrapper still works (backward compat)
+	all, err := s.ListLogs(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("ListLogs wrapper mismatch: %d", len(all))
+	}
 }

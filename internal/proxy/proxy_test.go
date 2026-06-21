@@ -1390,3 +1390,112 @@ func addProxyTestRoute(t *testing.T, s *store.Store, routeID string, modelIDs ..
 		t.Fatal(err)
 	}
 }
+
+func TestNonStreamingRecordsFirstTokenLatency(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":      "chatcmpl_1",
+			"object":  "chat.completion",
+			"created": 123,
+			"model":   "upstream-chat",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "pong",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     1,
+				"completion_tokens": 1,
+				"total_tokens":      2,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	model := addProxyTestModel(t, s, "p1", "upstream-chat", upstream.URL)
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: 5 * time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","messages":[{"role":"user","content":"ping"}]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", len(logs))
+	}
+	log := logs[0]
+	if log.Status != "success" {
+		t.Fatalf("expected success, got %s (err=%s)", log.Status, log.Error)
+	}
+	if log.FirstTokenMS <= 0 {
+		t.Fatalf("expected request first_token_ms > 0, got %d", log.FirstTokenMS)
+	}
+	if len(log.Attempts) != 1 || log.Attempts[0].FirstTokenMS <= 0 {
+		t.Fatalf("expected attempt first_token_ms > 0, got %+v", log.Attempts)
+	}
+}
+
+func TestStreamingRecordsFirstTokenLatency(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"created\":123,\"model\":\"upstream-chat\",\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	s := newProxyTestStore(t)
+	model := addProxyTestModel(t, s, "p1", "upstream-chat", upstream.URL)
+	addProxyTestRoute(t, s, "coder-fast", model.InternalID)
+
+	h := &Handler{store: s, client: &http.Client{Timeout: 5 * time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder-fast","stream":true,"messages":[{"role":"user","content":"ping"}]}`))
+	w := httptest.NewRecorder()
+
+	h.completion(w, req, "chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data: ") {
+		t.Fatalf("expected SSE body, got %s", w.Body.String())
+	}
+	logs, err := s.ListLogs(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", len(logs))
+	}
+	log := logs[0]
+	if log.Status != "success" {
+		t.Fatalf("expected success, got %s (err=%s)", log.Status, log.Error)
+	}
+	if log.FirstTokenMS <= 0 {
+		t.Fatalf("expected request first_token_ms > 0, got %d", log.FirstTokenMS)
+	}
+	if len(log.Attempts) != 1 || log.Attempts[0].FirstTokenMS <= 0 {
+		t.Fatalf("expected attempt first_token_ms > 0, got %+v", log.Attempts)
+	}
+}

@@ -109,6 +109,7 @@ export type AttemptLog = {
   status: string;
   http_status: number;
   duration_ms: number;
+  first_token_ms: number;
   error: string;
 };
 
@@ -122,11 +123,22 @@ export type RequestLog = {
   status: string;
   http_status: number;
   duration_ms: number;
+  first_token_ms: number;
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
   error: string;
   attempts: AttemptLog[];
+};
+
+export type LogCursor = {
+  created_at: string;
+  id: string;
+};
+
+export type LogPage = {
+  items: RequestLog[];
+  next_cursor: LogCursor | null;
 };
 
 export type Settings = {
@@ -143,7 +155,6 @@ export type AppData = {
   models: Model[];
   groups: ModelGroup[];
   routes: Route[];
-  logs: RequestLog[];
   settings: Settings;
   keys: ProxyKey[];
 };

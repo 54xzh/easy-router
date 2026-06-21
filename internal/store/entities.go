@@ -972,9 +972,9 @@ func (s *Store) AddRequestLog(log RequestLog) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO request_logs(id, created_at, api, route_id, client_model, final_model, status, http_status, duration_ms, prompt_tokens, completion_tokens, total_tokens, error)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		log.ID, log.CreatedAt, log.API, log.RouteID, log.ClientModel, log.FinalModel, log.Status, log.HTTPStatus, log.DurationMS, log.PromptTokens, log.CompletionTokens, log.TotalTokens, log.Error)
+	_, err = tx.Exec(`INSERT INTO request_logs(id, created_at, api, route_id, client_model, final_model, status, http_status, duration_ms, first_token_ms, prompt_tokens, completion_tokens, total_tokens, error)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		log.ID, log.CreatedAt, log.API, log.RouteID, log.ClientModel, log.FinalModel, log.Status, log.HTTPStatus, log.DurationMS, log.FirstTokenMS, log.PromptTokens, log.CompletionTokens, log.TotalTokens, log.Error)
 	if err != nil {
 		return err
 	}
@@ -982,8 +982,8 @@ func (s *Store) AddRequestLog(log RequestLog) error {
 		if attempt.Position == 0 {
 			attempt.Position = i + 1
 		}
-		if _, err := tx.Exec(`INSERT INTO attempt_logs(request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			log.ID, attempt.Position, attempt.ModelID, attempt.ProviderID, attempt.KeyName, attempt.KeyPrefix, attempt.Status, attempt.HTTPStatus, attempt.DurationMS, attempt.Error); err != nil {
+		if _, err := tx.Exec(`INSERT INTO attempt_logs(request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, first_token_ms, error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			log.ID, attempt.Position, attempt.ModelID, attempt.ProviderID, attempt.KeyName, attempt.KeyPrefix, attempt.Status, attempt.HTTPStatus, attempt.DurationMS, attempt.FirstTokenMS, attempt.Error); err != nil {
 			return err
 		}
 	}
@@ -991,42 +991,109 @@ func (s *Store) AddRequestLog(log RequestLog) error {
 }
 
 func (s *Store) ListLogs(limit int) ([]RequestLog, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	rows, err := s.db.Query(`SELECT id, created_at, api, route_id, client_model, final_model, status, http_status, duration_ms, prompt_tokens, completion_tokens, total_tokens, error
-		FROM request_logs ORDER BY created_at DESC LIMIT ?`, limit)
+	page, err := s.ListLogsFiltered(LogFilter{Limit: limit})
 	if err != nil {
 		return nil, err
+	}
+	return page.Items, nil
+}
+
+func (s *Store) ListLogsFiltered(filter LogFilter) (LogPage, error) {
+	if filter.Limit <= 0 || filter.Limit > 500 {
+		filter.Limit = 100
+	}
+	var (
+		where  []string
+		args   []any
+		cursor []string
+	)
+	if filter.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.ClientModel != "" {
+		where = append(where, "client_model = ?")
+		args = append(args, filter.ClientModel)
+	}
+	if filter.Q != "" {
+		where = append(where, "(error LIKE ? OR client_model LIKE ? OR final_model LIKE ?)")
+		pattern := "%" + filter.Q + "%"
+		args = append(args, pattern, pattern, pattern)
+	}
+	if filter.After != "" {
+		where = append(where, "created_at >= ?")
+		args = append(args, filter.After)
+	}
+	if filter.Before != "" {
+		where = append(where, "created_at <= ?")
+		args = append(args, filter.Before)
+	}
+	if filter.CursorCreatedAt != "" && filter.CursorID != "" {
+		cursor = append(cursor, "(created_at < ? OR (created_at = ? AND id < ?))")
+		args = append(args, filter.CursorCreatedAt, filter.CursorCreatedAt, filter.CursorID)
+	}
+
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+		if len(cursor) > 0 {
+			whereSQL += " AND " + strings.Join(cursor, " AND ")
+		}
+	} else if len(cursor) > 0 {
+		whereSQL = " WHERE " + strings.Join(cursor, " AND ")
+	}
+
+	query := `SELECT id, created_at, api, route_id, client_model, final_model, status, http_status, duration_ms, first_token_ms, prompt_tokens, completion_tokens, total_tokens, error
+		FROM request_logs` + whereSQL + ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, filter.Limit+1)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return LogPage{}, err
 	}
 	logs := []RequestLog{}
 	for rows.Next() {
 		var item RequestLog
-		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.API, &item.RouteID, &item.ClientModel, &item.FinalModel, &item.Status, &item.HTTPStatus, &item.DurationMS, &item.PromptTokens, &item.CompletionTokens, &item.TotalTokens, &item.Error); err != nil {
+		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.API, &item.RouteID, &item.ClientModel, &item.FinalModel, &item.Status, &item.HTTPStatus, &item.DurationMS, &item.FirstTokenMS, &item.PromptTokens, &item.CompletionTokens, &item.TotalTokens, &item.Error); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return LogPage{}, err
 		}
 		logs = append(logs, item)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return nil, err
+		return LogPage{}, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, err
+		return LogPage{}, err
 	}
-	for i := range logs {
-		attempts, err := s.AttemptsForLog(logs[i].ID)
-		if err != nil {
-			return nil, err
+
+	var nextCursor *LogCursor
+	if len(logs) > filter.Limit {
+		last := logs[filter.Limit-1]
+		nextCursor = &LogCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+		logs = logs[:filter.Limit]
+	}
+
+	if len(logs) > 0 {
+		ids := make([]string, len(logs))
+		for i := range logs {
+			ids[i] = logs[i].ID
 		}
-		logs[i].Attempts = attempts
+		attemptsByReq, err := s.AttemptsForLogs(ids)
+		if err != nil {
+			return LogPage{}, err
+		}
+		for i := range logs {
+			logs[i].Attempts = attemptsByReq[logs[i].ID]
+		}
 	}
-	return logs, nil
+
+	return LogPage{Items: logs, NextCursor: nextCursor}, nil
 }
 
 func (s *Store) AttemptsForLog(requestID string) ([]AttemptLog, error) {
-	rows, err := s.db.Query(`SELECT id, request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, error FROM attempt_logs WHERE request_id = ? ORDER BY position`, requestID)
+	rows, err := s.db.Query(`SELECT id, request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, first_token_ms, error FROM attempt_logs WHERE request_id = ? ORDER BY position`, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -1034,12 +1101,39 @@ func (s *Store) AttemptsForLog(requestID string) ([]AttemptLog, error) {
 	attempts := []AttemptLog{}
 	for rows.Next() {
 		var attempt AttemptLog
-		if err := rows.Scan(&attempt.ID, &attempt.RequestID, &attempt.Position, &attempt.ModelID, &attempt.ProviderID, &attempt.KeyName, &attempt.KeyPrefix, &attempt.Status, &attempt.HTTPStatus, &attempt.DurationMS, &attempt.Error); err != nil {
+		if err := rows.Scan(&attempt.ID, &attempt.RequestID, &attempt.Position, &attempt.ModelID, &attempt.ProviderID, &attempt.KeyName, &attempt.KeyPrefix, &attempt.Status, &attempt.HTTPStatus, &attempt.DurationMS, &attempt.FirstTokenMS, &attempt.Error); err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()
+}
+
+func (s *Store) AttemptsForLogs(requestIDs []string) (map[string][]AttemptLog, error) {
+	result := make(map[string][]AttemptLog, len(requestIDs))
+	if len(requestIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(requestIDs))
+	args := make([]any, len(requestIDs))
+	for i, id := range requestIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `SELECT id, request_id, position, model_id, provider_id, key_name, key_prefix, status, http_status, duration_ms, first_token_ms, error FROM attempt_logs WHERE request_id IN (` + strings.Join(placeholders, ", ") + `) ORDER BY position`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var attempt AttemptLog
+		if err := rows.Scan(&attempt.ID, &attempt.RequestID, &attempt.Position, &attempt.ModelID, &attempt.ProviderID, &attempt.KeyName, &attempt.KeyPrefix, &attempt.Status, &attempt.HTTPStatus, &attempt.DurationMS, &attempt.FirstTokenMS, &attempt.Error); err != nil {
+			return nil, err
+		}
+		result[attempt.RequestID] = append(result[attempt.RequestID], attempt)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) CleanupLogs(days int) error {

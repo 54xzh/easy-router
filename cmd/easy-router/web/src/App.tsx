@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { Activity, Boxes, Cable, GitBranch, ListTree, LogOut, Logs, RefreshCw, Settings as SettingsIcon } from "lucide-react";
 import { Button, Separator } from "@heroui/react";
 import { api, post } from "./api";
-import type { AppData, Model, ModelGroup, Provider, ProxyKey, RequestLog, Route, Settings, TabKey } from "./types";
+import type { AppData, Model, ModelGroup, Provider, ProxyKey, Route, Settings, TabKey } from "./types";
 import { Providers } from "./pages/Providers";
 import { Models } from "./pages/Models";
 import { Groups } from "./pages/Groups";
@@ -17,7 +17,6 @@ const emptyData: AppData = {
   models: [],
   groups: [],
   routes: [],
-  logs: [],
   settings: {},
   keys: [],
 };
@@ -33,12 +32,11 @@ const navItems: Array<{ key: TabKey; label: string; icon: ReactNode }> = [
 ];
 
 async function loadData(): Promise<AppData> {
-  const [providers, models, groups, routes, logs, settings, keys] = await Promise.all([
+  const [providers, models, groups, routes, settings, keys] = await Promise.all([
     api<Provider[]>("/api/admin/providers"),
     api<Model[]>("/api/admin/models"),
     api<ModelGroup[]>("/api/admin/groups"),
     api<Route[]>("/api/admin/routes"),
-    api<RequestLog[]>("/api/admin/logs?limit=100"),
     api<Settings>("/api/admin/settings"),
     api<ProxyKey[]>("/api/admin/proxy-keys"),
   ]);
@@ -48,7 +46,6 @@ async function loadData(): Promise<AppData> {
     models: models ?? [],
     groups: groups ?? [],
     routes: routes ?? [],
-    logs: logs ?? [],
     settings: settings ?? {},
     keys: keys ?? [],
   };
@@ -82,6 +79,12 @@ export default function App() {
       return;
     }
     setError(message);
+  }
+
+  function handleAuthError() {
+    setAuthed(false);
+    setData(emptyData);
+    setError("");
   }
 
   async function run(task: () => Promise<void>) {
@@ -244,7 +247,7 @@ export default function App() {
         {active === "models" && <Models data={data} run={run} />}
         {active === "groups" && <Groups data={data} run={run} />}
         {active === "routes" && <Routes data={data} run={run} />}
-        {active === "logs" && <LogsView logs={data.logs} />}
+        {active === "logs" && <LogsView routes={data.routes} onAuthError={handleAuthError} />}
         {active === "settings" && <SettingsView data={data} run={run} />}
       </main>
     </div>

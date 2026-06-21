@@ -1,4 +1,4 @@
-import { Model, ModelGroup, Provider, Route, RouteStep, Settings, AppData } from "./types";
+import { Model, ModelGroup, Provider, Route, RouteStep, Settings, AppData, RequestLog } from "./types";
 import { RouteStepForm } from "./pages/Routes";
 import { GroupMemberForm } from "./pages/Groups";
 
@@ -196,4 +196,15 @@ export function providerDeleteDescription(modelCount: number) {
     return "删除后会移除这个提供商配置。";
   }
   return `删除后会移除这个提供商配置，并同时删除 ${modelCount} 个已添加模型。相关模型组和路由请之后检查。`;
+}
+
+export function formatSeconds(ms: number) {
+  if (!ms || ms <= 0) return "-";
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+export function logRouteName(log: RequestLog, routes: Route[]) {
+  if (!log.route_id) return "-";
+  const route = routes.find((item) => item.id === log.route_id);
+  return route ? route.name : log.route_id;
 }

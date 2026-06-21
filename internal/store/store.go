@@ -148,6 +148,7 @@ type RequestLog struct {
 	Status           string       `json:"status"`
 	HTTPStatus       int          `json:"http_status"`
 	DurationMS       int64        `json:"duration_ms"`
+	FirstTokenMS     int64        `json:"first_token_ms"`
 	PromptTokens     int64        `json:"prompt_tokens"`
 	CompletionTokens int64        `json:"completion_tokens"`
 	TotalTokens      int64        `json:"total_tokens"`
@@ -156,17 +157,39 @@ type RequestLog struct {
 }
 
 type AttemptLog struct {
-	ID         int64  `json:"id"`
-	RequestID  string `json:"request_id"`
-	Position   int    `json:"position"`
-	ModelID    string `json:"model_id"`
-	ProviderID string `json:"provider_id"`
-	KeyName    string `json:"key_name"`
-	KeyPrefix  string `json:"key_prefix"`
-	Status     string `json:"status"`
-	HTTPStatus int    `json:"http_status"`
-	DurationMS int64  `json:"duration_ms"`
-	Error      string `json:"error"`
+	ID           int64  `json:"id"`
+	RequestID    string `json:"request_id"`
+	Position     int    `json:"position"`
+	ModelID      string `json:"model_id"`
+	ProviderID   string `json:"provider_id"`
+	KeyName      string `json:"key_name"`
+	KeyPrefix    string `json:"key_prefix"`
+	Status       string `json:"status"`
+	HTTPStatus   int    `json:"http_status"`
+	DurationMS   int64  `json:"duration_ms"`
+	FirstTokenMS int64  `json:"first_token_ms"`
+	Error        string `json:"error"`
+}
+
+type LogFilter struct {
+	Status          string
+	ClientModel     string
+	Q               string
+	After           string
+	Before          string
+	CursorCreatedAt string
+	CursorID        string
+	Limit           int
+}
+
+type LogPage struct {
+	Items      []RequestLog `json:"items"`
+	NextCursor *LogCursor   `json:"next_cursor"`
+}
+
+type LogCursor struct {
+	CreatedAt string `json:"created_at"`
+	ID        string `json:"id"`
 }
 
 func Open(path, secretKey string) (*Store, error) {
@@ -359,6 +382,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureAttemptKeyColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureLogFirstTokenColumns(ctx); err != nil {
+		return err
+	}
 	defaults := map[string]string{
 		"models_expose_raw":        "false",
 		"log_retention_days":       "30",
@@ -483,6 +509,28 @@ func (s *Store) ensureAttemptKeyColumns(ctx context.Context) error {
 	}
 	if !columns["key_prefix"] {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE attempt_logs ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureLogFirstTokenColumns(ctx context.Context) error {
+	reqColumns, err := s.tableColumns(ctx, "request_logs")
+	if err != nil {
+		return err
+	}
+	if !reqColumns["first_token_ms"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE request_logs ADD COLUMN first_token_ms INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	attColumns, err := s.tableColumns(ctx, "attempt_logs")
+	if err != nil {
+		return err
+	}
+	if !attColumns["first_token_ms"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE attempt_logs ADD COLUMN first_token_ms INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}

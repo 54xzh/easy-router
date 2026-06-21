@@ -116,6 +116,8 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		return
 	}
 	start := time.Now()
+	fw := newFirstByteWriter(w, start)
+	w = fw
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "读取请求失败"})
@@ -188,16 +190,17 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 			return
 		}
 		attemptStart := time.Now()
-		statusCode, responseBody, responseHeaders, copyErr, fallback, err := h.callUpstream(w, r, item, streaming, upstreamTimeout)
+		statusCode, responseBody, responseHeaders, copyErr, fallback, err, firstTokenMS := h.callUpstream(w, r, item, streaming, upstreamTimeout, attemptStart)
 		duration := time.Since(attemptStart).Milliseconds()
 		attempt := store.AttemptLog{
-			Position:   idx + 1,
-			ModelID:    item.LogModelID,
-			ProviderID: item.LogProviderID,
-			KeyName:    item.KeyName,
-			KeyPrefix:  item.KeyPrefix,
-			HTTPStatus: statusCode,
-			DurationMS: duration,
+			Position:     idx + 1,
+			ModelID:      item.LogModelID,
+			ProviderID:   item.LogProviderID,
+			KeyName:      item.KeyName,
+			KeyPrefix:    item.KeyPrefix,
+			HTTPStatus:   statusCode,
+			DurationMS:   duration,
+			FirstTokenMS: firstTokenMS,
 		}
 
 		if err != nil {
@@ -252,6 +255,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 				requestLog.Status = "stream_error"
 				requestLog.Error = copyErr.Error()
 			}
+			requestLog.FirstTokenMS = fw.Millis()
 			_ = h.store.AddRequestLog(requestLog)
 			return
 		}
@@ -260,7 +264,6 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		requestLog.PromptTokens = usage.prompt
 		requestLog.CompletionTokens = usage.completion
 		requestLog.TotalTokens = usage.total
-		_ = h.store.AddRequestLog(requestLog)
 		copyHeaders(w.Header(), responseHeaders)
 		if item.Conversion != conversionNone {
 			w.Header().Del("Content-Length")
@@ -269,6 +272,8 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 		}
 		w.WriteHeader(statusCode)
 		_, _ = w.Write(responseBody)
+		requestLog.FirstTokenMS = fw.Millis()
+		_ = h.store.AddRequestLog(requestLog)
 		return
 	}
 
@@ -280,7 +285,7 @@ func (h *Handler) completion(w http.ResponseWriter, r *http.Request, api string)
 	writeJSON(w, http.StatusBadGateway, map[string]any{"error": requestLog.Error})
 }
 
-func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item candidate, streaming bool, upstreamTimeout time.Duration) (int, []byte, http.Header, error, bool, error) {
+func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item candidate, streaming bool, upstreamTimeout time.Duration, attemptStart time.Time) (int, []byte, http.Header, error, bool, error, int64) {
 	endpoint := joinEndpoint(item.Provider.BaseURL, item.Endpoint)
 	ctx := r.Context()
 	var cancel context.CancelFunc
@@ -290,7 +295,7 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(item.RequestBody))
 	if err != nil {
-		return http.StatusBadGateway, nil, nil, nil, true, err
+		return http.StatusBadGateway, nil, nil, nil, true, err, 0
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
@@ -304,19 +309,20 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if requestTimedOut(ctx, r.Context()) {
-			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout)
+			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout), 0
 		}
 		if errors.Is(err, context.Canceled) {
-			return http.StatusBadGateway, nil, nil, nil, true, fmt.Errorf("上游连接取消：%w", err)
+			return http.StatusBadGateway, nil, nil, nil, true, fmt.Errorf("上游连接取消：%w", err), 0
 		}
-		return http.StatusBadGateway, nil, nil, nil, true, err
+		return http.StatusBadGateway, nil, nil, nil, true, err, 0
 	}
 	defer resp.Body.Close()
+	upstreamBody := newFirstByteReader(resp.Body, attemptStart)
 
 	if resp.StatusCode >= 400 {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		payload, _ := io.ReadAll(io.LimitReader(upstreamBody, 1<<20))
 		message := fmt.Sprintf("上游返回 %d：%s", resp.StatusCode, strings.TrimSpace(string(payload)))
-		return resp.StatusCode, payload, resp.Header.Clone(), nil, true, errors.New(message)
+		return resp.StatusCode, payload, resp.Header.Clone(), nil, true, errors.New(message), upstreamBody.Millis()
 	}
 
 	if streaming {
@@ -327,28 +333,28 @@ func (h *Handler) callUpstream(w http.ResponseWriter, r *http.Request, item cand
 			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.WriteHeader(resp.StatusCode)
-			copyErr := convertStream(w, resp.Body, item.Conversion, item.Model.OriginalID, item.StreamIncludeUsage)
-			return resp.StatusCode, nil, resp.Header.Clone(), copyErr, false, nil
+			copyErr := convertStream(w, upstreamBody, item.Conversion, item.Model.OriginalID, item.StreamIncludeUsage)
+			return resp.StatusCode, nil, resp.Header.Clone(), copyErr, false, nil, upstreamBody.Millis()
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, copyErr := io.Copy(w, resp.Body)
-		return resp.StatusCode, nil, resp.Header.Clone(), copyErr, false, nil
+		_, copyErr := io.Copy(w, upstreamBody)
+		return resp.StatusCode, nil, resp.Header.Clone(), copyErr, false, nil, upstreamBody.Millis()
 	}
 
-	payload, err := io.ReadAll(resp.Body)
+	payload, err := io.ReadAll(upstreamBody)
 	if err != nil {
 		if requestTimedOut(ctx, r.Context()) {
-			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout)
+			return http.StatusGatewayTimeout, nil, nil, nil, true, fmt.Errorf("上游请求超过 %s", upstreamTimeout), upstreamBody.Millis()
 		}
-		return http.StatusBadGateway, nil, nil, nil, true, err
+		return http.StatusBadGateway, nil, nil, nil, true, err, upstreamBody.Millis()
 	}
 	if item.Conversion != conversionNone {
 		payload, err = convertResponsePayload(payload, item.Conversion)
 		if err != nil {
-			return http.StatusBadGateway, nil, resp.Header.Clone(), nil, true, err
+			return http.StatusBadGateway, nil, resp.Header.Clone(), nil, true, err, upstreamBody.Millis()
 		}
 	}
-	return resp.StatusCode, payload, resp.Header.Clone(), nil, false, nil
+	return resp.StatusCode, payload, resp.Header.Clone(), nil, false, nil, upstreamBody.Millis()
 }
 
 func (h *Handler) resolveCandidates(clientModel string, payload map[string]any, api string, streaming bool, autoDisableEnabled bool) ([]candidate, string, error) {
@@ -2134,6 +2140,77 @@ func flush(w io.Writer) {
 	}
 }
 
+type firstByteReader struct {
+	r     io.Reader
+	start time.Time
+	first int64
+	once  bool
+}
+
+func newFirstByteReader(r io.Reader, start time.Time) *firstByteReader {
+	return &firstByteReader{r: r, start: start, first: -1}
+}
+
+func (f *firstByteReader) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 && !f.once {
+		f.first = time.Since(f.start).Milliseconds()
+		f.once = true
+	}
+	return n, err
+}
+
+func (f *firstByteReader) Millis() int64 {
+	if f.first < 0 {
+		return 0
+	}
+	return f.first
+}
+
+type firstByteWriter struct {
+	http.ResponseWriter
+	start time.Time
+	first int64
+	once  bool
+}
+
+func newFirstByteWriter(w http.ResponseWriter, start time.Time) *firstByteWriter {
+	return &firstByteWriter{ResponseWriter: w, start: start, first: -1}
+}
+
+func (f *firstByteWriter) markFirst() {
+	if !f.once {
+		f.first = time.Since(f.start).Milliseconds()
+		f.once = true
+	}
+}
+
+func (f *firstByteWriter) Write(p []byte) (int, error) {
+	n, err := f.ResponseWriter.Write(p)
+	if n > 0 {
+		f.markFirst()
+	}
+	return n, err
+}
+
+func (f *firstByteWriter) WriteHeader(statusCode int) {
+	f.markFirst()
+	f.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (f *firstByteWriter) Flush() {
+	if flusher, ok := f.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (f *firstByteWriter) Millis() int64 {
+	if f.first < 0 {
+		return 0
+	}
+	return f.first
+}
+
 func bearerToken(header string) string {
 	header = strings.TrimSpace(header)
 	if header == "" {
@@ -2271,7 +2348,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func newRequestID() string {
-	return "req_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	return "req_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatInt(rand.Int63(), 36)
 }
 
 var (

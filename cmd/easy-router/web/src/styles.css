@@ -1112,6 +1112,233 @@ body {
 }
 
 /* ============================================
+   Logs View
+   ============================================ */
+
+.log-view {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.log-filter-select {
+  min-width: 160px;
+}
+
+.log-interval-select {
+  min-width: 110px;
+}
+
+.log-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.log-input {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 180px;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.log-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.log-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.log-stats {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.log-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.log-stat b {
+  font-variant-numeric: tabular-nums;
+}
+
+.log-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.log-autorefresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-error {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger) 6%, var(--surface));
+}
+
+.log-empty {
+  padding: 32px 16px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.log-table .log-row {
+  cursor: pointer;
+}
+
+.log-table .log-row-open {
+  background: var(--background-secondary);
+}
+
+.log-chevron-col {
+  width: 28px;
+  padding-right: 0;
+}
+
+.log-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-detail-row > td {
+  padding: 0;
+  background: var(--background-secondary);
+}
+
+.log-detail {
+  padding: 14px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.log-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.log-detail-error {
+  font-size: 13px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.log-detail-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+}
+
+.log-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-left: 2px solid var(--separator);
+  padding-left: 14px;
+}
+
+.log-attempt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-attempt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.log-attempt-pos {
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-attempt-error {
+  margin-left: 28px;
+  font-size: 12px;
+}
+
+.log-loadmore {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.spin {
+  animation: log-spin 0.9s linear infinite;
+}
+
+@keyframes log-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================
    Scrollbar Styling
    ============================================ */
 

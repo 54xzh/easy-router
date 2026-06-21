@@ -515,9 +515,22 @@ func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "方法不支持"})
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	logs, err := h.store.ListLogs(limit)
-	writeResult(w, logs, err)
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	filter := store.LogFilter{
+		Status:      q.Get("status"),
+		ClientModel: q.Get("model"),
+		Q:           q.Get("q"),
+		After:       q.Get("after"),
+		Before:      q.Get("before"),
+		Limit:       limit,
+	}
+	if cursor := q.Get("cursor_created_at"); cursor != "" {
+		filter.CursorCreatedAt = cursor
+		filter.CursorID = q.Get("cursor_id")
+	}
+	page, err := h.store.ListLogsFiltered(filter)
+	writeResult(w, page, err)
 }
 
 func (h *Handler) settings(w http.ResponseWriter, r *http.Request) {
